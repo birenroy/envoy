@@ -275,7 +275,9 @@ void DegenerateMaglevTable::constructImplementationInternals(
     std::vector<TableBuildEntry>& table_build_entries, double /*max_normalized_weight*/) {
   ASSERT(table_build_entries.size() == 1,
          "DegenerateMaglevTable is intended for the case of a single host!");
-  single_host_ = table_build_entries[0].host_;
+  TableBuildEntry& entry = table_build_entries[0];
+  single_host_ = entry.host_;
+  ++entry.count_;
 }
 
 void OriginalMaglevTable::logMaglevTable(bool use_hostname_for_hashing) const {
