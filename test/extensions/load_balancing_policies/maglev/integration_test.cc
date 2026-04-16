@@ -1,5 +1,6 @@
 #include <chrono>
 #include <cstdint>
+#include <numeric>
 
 #include "envoy/config/endpoint/v3/endpoint_components.pb.h"
 
@@ -93,11 +94,8 @@ public:
   }
 
   std::vector<uint64_t> range(uint64_t bound) {
-    std::vector<uint64_t> v;
-    v.reserve(bound);
-    for (uint64_t i = 0; i < bound; ++i) {
-      v.push_back(i);
-    }
+    std::vector<uint64_t> v(bound);
+    std::iota(v.begin(), v.end(), 0);
     return v;
   }
 
