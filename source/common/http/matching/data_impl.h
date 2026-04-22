@@ -17,7 +17,8 @@ namespace Matching {
  * Implementation of HttpMatchingData, providing HTTP specific data to
  * the match tree.
  *
- * This using declaration will be removed, once all references have been migrated to HttpMatchingData.
+ * This using declaration will be removed, once all references have been migrated to
+ * HttpMatchingData.
  */
 using HttpMatchingDataImpl = HttpMatchingData;
 

@@ -1249,9 +1249,7 @@ public:
     response_trailers_ = &response_trailers;
   }
 
-  RequestHeaderMapOptConstRef requestHeaders() const {
-    return makeOptRefFromPtr(request_headers_);
-  }
+  RequestHeaderMapOptConstRef requestHeaders() const { return makeOptRefFromPtr(request_headers_); }
   RequestTrailerMapOptConstRef requestTrailers() const {
     return makeOptRefFromPtr(request_trailers_);
   }
@@ -1281,7 +1279,7 @@ public:
 
   Ssl::ConnectionInfoConstSharedPtr ssl() const { return connectionInfoProvider().sslConnection(); }
 
- private:
+private:
   const StreamInfo::StreamInfo& stream_info_;
   const RequestHeaderMap* request_headers_{};
   const ResponseHeaderMap* response_headers_{};
