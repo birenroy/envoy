@@ -1226,7 +1226,7 @@ class StreamFilter : public virtual StreamDecoderFilter, public virtual StreamEn
 
 using StreamFilterSharedPtr = std::shared_ptr<StreamFilter>;
 
-class HttpMatchingData {
+class HttpMatchingData final {
 public:
   static absl::string_view name() { return "http"; }
 
