@@ -1,7 +1,6 @@
 #pragma once
 
 #include <memory>
-#include <optional>
 
 #include "envoy/extensions/common/matching/v3/extension_matcher.pb.validate.h"
 #include "envoy/extensions/filters/common/matcher/action/v3/skip_action.pb.h"
@@ -11,6 +10,8 @@
 #include "source/common/http/matching/data_impl.h"
 #include "source/common/matcher/matcher.h"
 #include "source/extensions/filters/http/common/factory_base.h"
+
+#include "third_party/absl/types/optional.h"
 
 namespace Envoy {
 namespace Common {
@@ -50,7 +51,7 @@ public:
     Matcher::MatchTreeSharedPtr<Envoy::Http::HttpMatchingData> match_tree_;
     Envoy::Http::StreamFilterBase* base_filter_{};
 
-    std::optional<Envoy::Http::Matching::HttpMatchingDataImpl> matching_data_;
+    absl::optional<Envoy::Http::Matching::HttpMatchingDataImpl> matching_data_;
     bool match_tree_evaluated_{};
     bool skip_filter_{};
   };
