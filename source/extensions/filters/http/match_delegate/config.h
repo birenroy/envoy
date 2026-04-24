@@ -1,6 +1,7 @@
 #pragma once
 
 #include <memory>
+#include <optional>
 
 #include "envoy/extensions/common/matching/v3/extension_matcher.pb.validate.h"
 #include "envoy/extensions/filters/common/matcher/action/v3/skip_action.pb.h"
@@ -32,8 +33,8 @@ public:
     void evaluateMatchTree(MatchDataUpdateFunc data_update_func);
     bool skipFilter() const { return skip_filter_; }
     void onStreamInfo(const StreamInfo::StreamInfo& stream_info) {
-      if (matching_data_ == nullptr) {
-        matching_data_ = std::make_unique<Envoy::Http::Matching::HttpMatchingDataImpl>(stream_info);
+      if (!matching_data_.has_value()) {
+        matching_data_.emplace(stream_info);
       }
     }
 
@@ -49,7 +50,7 @@ public:
     Matcher::MatchTreeSharedPtr<Envoy::Http::HttpMatchingData> match_tree_;
     Envoy::Http::StreamFilterBase* base_filter_{};
 
-    std::unique_ptr<Envoy::Http::Matching::HttpMatchingDataImpl> matching_data_;
+    std::optional<Envoy::Http::Matching::HttpMatchingDataImpl> matching_data_;
     bool match_tree_evaluated_{};
     bool skip_filter_{};
   };

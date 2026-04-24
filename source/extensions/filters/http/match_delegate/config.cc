@@ -82,7 +82,7 @@ void DelegatingStreamFilter::FilterMatchState::evaluateMatchTree(
     return;
   }
 
-  ASSERT(matching_data_ != nullptr);
+  ASSERT(matching_data_.has_value());
   data_update_func(*matching_data_);
 
   const Matcher::ActionMatchResult match_result =
