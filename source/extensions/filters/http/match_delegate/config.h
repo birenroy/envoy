@@ -11,7 +11,7 @@
 #include "source/common/matcher/matcher.h"
 #include "source/extensions/filters/http/common/factory_base.h"
 
-#include "third_party/absl/types/optional.h"
+#include "absl/types/optional.h"
 
 namespace Envoy {
 namespace Common {
