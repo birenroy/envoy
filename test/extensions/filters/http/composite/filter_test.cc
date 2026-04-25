@@ -17,6 +17,7 @@
 #include "test/test_common/logging.h"
 #include "test/test_common/registry.h"
 
+#include "absl/base/no_destructor.h"
 #include "gtest/gtest.h"
 
 namespace Envoy {
@@ -27,10 +28,12 @@ namespace {
 
 using Envoy::Protobuf::util::MessageDifferencer;
 
+static const absl::NoDestructor<NamedFilterChainFactoryMap> kEmptyMap;
+
 class CompositeFilterTest : public ::testing::Test {
 public:
   CompositeFilterTest(bool is_upstream)
-      : filter_(stats_, decoder_callbacks_.dispatcher(), is_upstream) {
+      : filter_(stats_, decoder_callbacks_.dispatcher(), is_upstream, *kEmptyMap) {
     filter_.setDecoderFilterCallbacks(decoder_callbacks_);
     filter_.setEncoderFilterCallbacks(encoder_callbacks_);
   }
@@ -1765,7 +1768,7 @@ TEST(FilterCallbacksWrapperTest, SingleModeRejectsMultipleFiltersAndExposesDispa
   testing::NiceMock<Http::MockStreamDecoderFilterCallbacks> decoder_callbacks;
   testing::NiceMock<Http::MockStreamEncoderFilterCallbacks> encoder_callbacks;
 
-  Filter filter(stats, dispatcher, false);
+  Filter filter(stats, dispatcher, false, *kEmptyMap);
   filter.setDecoderFilterCallbacks(decoder_callbacks);
   filter.setEncoderFilterCallbacks(encoder_callbacks);
 
@@ -1789,7 +1792,7 @@ TEST(FilterCallbacksWrapperTest, ChainModeAcceptsMultipleFilters) {
   testing::NiceMock<Http::MockStreamDecoderFilterCallbacks> decoder_callbacks;
   testing::NiceMock<Http::MockStreamEncoderFilterCallbacks> encoder_callbacks;
 
-  Filter filter(stats, dispatcher, false);
+  Filter filter(stats, dispatcher, false, *kEmptyMap);
   filter.setDecoderFilterCallbacks(decoder_callbacks);
   filter.setEncoderFilterCallbacks(encoder_callbacks);
 
@@ -1819,7 +1822,7 @@ TEST_F(FilterTest, NamedFilterChainLookupWithSamplingSkipped) {
   }};
 
   // Create filter with named chains.
-  Filter filter_with_chains(stats_, decoder_callbacks_.dispatcher(), false, named_chains);
+  Filter filter_with_chains(stats_, decoder_callbacks_.dispatcher(), false, *named_chains);
   filter_with_chains.setDecoderFilterCallbacks(decoder_callbacks_);
   filter_with_chains.setEncoderFilterCallbacks(encoder_callbacks_);
 
@@ -1855,7 +1858,7 @@ TEST_F(FilterTest, NamedFilterChainLookupNoNamedChainsConfigured) {
       .WillByDefault(testing::ReturnRef(filter_state));
 
   // Create filter without the named chains.
-  Filter filter_without_chains(stats_, decoder_callbacks_.dispatcher(), false, nullptr);
+  Filter filter_without_chains(stats_, decoder_callbacks_.dispatcher(), false, *kEmptyMap);
   filter_without_chains.setDecoderFilterCallbacks(decoder_callbacks_);
   filter_without_chains.setEncoderFilterCallbacks(encoder_callbacks_);
 
@@ -1889,7 +1892,7 @@ TEST_F(FilterTest, NamedFilterChainLookupChainNotFound) {
     cb.addStreamFilter(std::make_shared<Http::MockStreamFilter>());
   }};
 
-  Filter filter_with_chains(stats_, decoder_callbacks_.dispatcher(), false, named_chains);
+  Filter filter_with_chains(stats_, decoder_callbacks_.dispatcher(), false, *named_chains);
   filter_with_chains.setDecoderFilterCallbacks(decoder_callbacks_);
   filter_with_chains.setEncoderFilterCallbacks(encoder_callbacks_);
 
@@ -1925,7 +1928,7 @@ TEST_F(FilterTest, NamedFilterChainLookupSuccess) {
       [&](Http::FilterChainFactoryCallbacks& cb) { cb.addStreamFilter(filter1); },
       [&](Http::FilterChainFactoryCallbacks& cb) { cb.addStreamFilter(filter2); }};
 
-  Filter filter_with_chains(stats_, decoder_callbacks_.dispatcher(), false, named_chains);
+  Filter filter_with_chains(stats_, decoder_callbacks_.dispatcher(), false, *named_chains);
   filter_with_chains.setDecoderFilterCallbacks(decoder_callbacks_);
   filter_with_chains.setEncoderFilterCallbacks(encoder_callbacks_);
 
@@ -2006,7 +2009,7 @@ TEST_F(FilterTest, NamedFilterChainLookupWithAccessLoggers) {
       },
   };
 
-  Filter filter_with_chains(stats_, decoder_callbacks_.dispatcher(), false, named_chains);
+  Filter filter_with_chains(stats_, decoder_callbacks_.dispatcher(), false, *named_chains);
   filter_with_chains.setDecoderFilterCallbacks(decoder_callbacks_);
   filter_with_chains.setEncoderFilterCallbacks(encoder_callbacks_);
 

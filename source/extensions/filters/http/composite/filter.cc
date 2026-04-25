@@ -105,15 +105,15 @@ void Filter::onMatchCallback(const Matcher::Action& action) {
     const std::string& chain_name = composite_action.filterChainName();
 
     // Soft fail: if no named filter chains are configured, do nothing.
-    if (!named_filter_chains_) {
+    if (named_filter_chains_.empty()) {
       ENVOY_LOG(debug, "filter_chain_name '{}' specified but no named filter chains configured",
                 chain_name);
       return;
     }
 
     // Look up the filter chain by name.
-    auto it = named_filter_chains_->find(chain_name);
-    if (it == named_filter_chains_->end()) {
+    auto it = named_filter_chains_.find(chain_name);
+    if (it == named_filter_chains_.end()) {
       // Soft fail: if the named filter chain is not found, do nothing.
       ENVOY_LOG(debug, "filter_chain_name '{}' not found in named filter chains", chain_name);
       return;

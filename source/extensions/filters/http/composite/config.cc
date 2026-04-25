@@ -6,6 +6,8 @@
 #include "source/common/config/utility.h"
 #include "source/extensions/filters/http/composite/filter.h"
 
+#include "absl/base/no_destructor.h"
+
 namespace Envoy {
 namespace Extensions {
 namespace HttpFilters {
@@ -69,7 +71,7 @@ absl::StatusOr<Http::FilterFactoryCb> CompositeFilterFactory::createFilterFactor
 
   return [stats, named_chains](Http::FilterChainFactoryCallbacks& callbacks) -> void {
     auto filter = std::make_shared<Filter>(*stats, callbacks.dispatcher(), false /* is_upstream */,
-                                           named_chains);
+                                           *named_chains);
     callbacks.addStreamFilter(filter);
     callbacks.addAccessLogHandler(filter);
   };
@@ -85,8 +87,12 @@ absl::StatusOr<Http::FilterFactoryCb> CompositeFilterFactory::createFilterFactor
   auto stats = std::make_shared<FilterStats>(
       FilterStats{ALL_COMPOSITE_FILTER_STATS(POOL_COUNTER_PREFIX(dual_info.scope, prefix))});
 
-  return [stats, dual_info](Http::FilterChainFactoryCallbacks& callbacks) -> void {
-    auto filter = std::make_shared<Filter>(*stats, callbacks.dispatcher(), dual_info.is_upstream);
+  static const absl::NoDestructor<NamedFilterChainFactoryMap> empty_named_chains;
+
+  return [stats, dual_info, named_chains = *empty_named_chains](
+             Http::FilterChainFactoryCallbacks& callbacks) -> void {
+    auto filter = std::make_shared<Filter>(*stats, callbacks.dispatcher(), dual_info.is_upstream,
+                                           named_chains);
     callbacks.addStreamFilter(filter);
     callbacks.addAccessLogHandler(filter);
   };

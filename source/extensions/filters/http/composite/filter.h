@@ -92,9 +92,9 @@ class Filter : public Http::StreamFilter,
                Logger::Loggable<Logger::Id::filter> {
 public:
   Filter(FilterStats& stats, Event::Dispatcher& dispatcher, bool is_upstream,
-         NamedFilterChainFactoryMapSharedPtr named_filter_chains = nullptr)
-      : dispatcher_(dispatcher), stats_(stats), is_upstream_(is_upstream),
-        named_filter_chains_(std::move(named_filter_chains)) {}
+         const NamedFilterChainFactoryMap& named_filter_chains)
+      : dispatcher_(dispatcher), stats_(stats), named_filter_chains_(named_filter_chains),
+        is_upstream_(is_upstream) {}
 
   // Http::StreamDecoderFilter
   Http::FilterHeadersStatus decodeHeaders(Http::RequestHeaderMap& headers,
@@ -197,10 +197,10 @@ private:
   Http::StreamEncoderFilterCallbacks* encoder_callbacks_{};
   Http::StreamDecoderFilterCallbacks* decoder_callbacks_{};
   FilterStats& stats_;
-  // Filter in the upstream filter chain.
-  bool is_upstream_;
   // Named filter chains compiled at config time.
-  NamedFilterChainFactoryMapSharedPtr named_filter_chains_;
+  const NamedFilterChainFactoryMap& named_filter_chains_;
+  // Filter is in the upstream filter chain.
+  bool is_upstream_;
 };
 
 } // namespace Composite
