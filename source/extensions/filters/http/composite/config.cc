@@ -13,6 +13,8 @@ namespace Extensions {
 namespace HttpFilters {
 namespace Composite {
 
+static const absl::NoDestructor<NamedFilterChainFactoryMap> kEmptyNamedChains;
+
 absl::StatusOr<NamedFilterChainFactoryMapSharedPtr>
 CompositeFilterFactory::compileNamedFilterChains(
     const envoy::extensions::filters::http::composite::v3::Composite& config,
@@ -70,8 +72,9 @@ absl::StatusOr<Http::FilterFactoryCb> CompositeFilterFactory::createFilterFactor
       FilterStats{ALL_COMPOSITE_FILTER_STATS(POOL_COUNTER_PREFIX(context.scope(), prefix))});
 
   return [stats, named_chains](Http::FilterChainFactoryCallbacks& callbacks) -> void {
-    auto filter = std::make_shared<Filter>(*stats, callbacks.dispatcher(), false /* is_upstream */,
-                                           *named_chains);
+    auto filter =
+        std::make_shared<Filter>(*stats, callbacks.dispatcher(), false /* is_upstream */,
+                                 named_chains == nullptr ? *kEmptyNamedChains : *named_chains);
     callbacks.addStreamFilter(filter);
     callbacks.addAccessLogHandler(filter);
   };
@@ -87,10 +90,8 @@ absl::StatusOr<Http::FilterFactoryCb> CompositeFilterFactory::createFilterFactor
   auto stats = std::make_shared<FilterStats>(
       FilterStats{ALL_COMPOSITE_FILTER_STATS(POOL_COUNTER_PREFIX(dual_info.scope, prefix))});
 
-  static const absl::NoDestructor<NamedFilterChainFactoryMap> empty_named_chains;
-
-  return [stats, dual_info, named_chains = *empty_named_chains](
-             Http::FilterChainFactoryCallbacks& callbacks) -> void {
+  return [stats, dual_info,
+          named_chains = *kEmptyNamedChains](Http::FilterChainFactoryCallbacks& callbacks) -> void {
     auto filter = std::make_shared<Filter>(*stats, callbacks.dispatcher(), dual_info.is_upstream,
                                            named_chains);
     callbacks.addStreamFilter(filter);
