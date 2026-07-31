@@ -1929,7 +1929,7 @@ const VirtualHostImpl* RouteMatcher::findWildcardVirtualHost(
     }
     const auto match = wildcard_map.find(substring_function(host, wildcard_length));
     if (match != wildcard_map.end()) {
-      return match->second.get();
+      return match->second;
     }
   }
   return nullptr;
@@ -1956,10 +1956,12 @@ RouteMatcher::RouteMatcher(const envoy::config::route::v3::RouteConfiguration& r
       ignore_port_in_host_matching_(route_config.ignore_port_in_host_matching()),
       vhost_header_(route_config.vhost_header()) {
   for (const auto& virtual_host_config : route_config.virtual_hosts()) {
-    VirtualHostImplSharedPtr virtual_host = std::make_shared<VirtualHostImpl>(
-        virtual_host_config, global_route_config, factory_context, *vhost_scope_, validator,
-        validate_clusters, creation_status);
+    auto virtual_host = std::make_unique<VirtualHostImpl>(virtual_host_config, global_route_config,
+                                                          factory_context, *vhost_scope_, validator,
+                                                          validate_clusters, creation_status);
     SET_AND_RETURN_IF_NOT_OK(creation_status, creation_status);
+    const VirtualHostImpl* virtual_host_ptr = virtual_host.get();
+    virtual_hosts_storage_.push_back(std::move(virtual_host));
     for (const std::string& domain_name : virtual_host_config.domains()) {
       const Http::LowerCaseString lower_case_domain_name(domain_name);
       absl::string_view domain = lower_case_domain_name;
@@ -1970,17 +1972,17 @@ RouteMatcher::RouteMatcher(const envoy::config::route::v3::RouteConfiguration& r
               "Only a single wildcard domain is permitted in route {}", route_config.name()));
           return;
         }
-        default_virtual_host_ = virtual_host;
+        default_virtual_host_ = virtual_host_ptr;
       } else if (!domain.empty() && '*' == domain[0]) {
         duplicate_found = !wildcard_virtual_host_suffixes_[domain.size() - 1]
-                               .emplace(domain.substr(1), virtual_host)
+                               .emplace(domain.substr(1), virtual_host_ptr)
                                .second;
       } else if (!domain.empty() && '*' == domain[domain.size() - 1]) {
         duplicate_found = !wildcard_virtual_host_prefixes_[domain.size() - 1]
-                               .emplace(domain.substr(0, domain.size() - 1), virtual_host)
+                               .emplace(domain.substr(0, domain.size() - 1), virtual_host_ptr)
                                .second;
       } else {
-        duplicate_found = !virtual_hosts_.emplace(domain, virtual_host).second;
+        duplicate_found = !virtual_hosts_.emplace(domain, virtual_host_ptr).second;
       }
       if (duplicate_found) {
         creation_status = absl::InvalidArgumentError(
@@ -1997,7 +1999,7 @@ const VirtualHostImpl* RouteMatcher::findVirtualHost(const Http::RequestHeaderMa
   // Fast path the case where we only have a default virtual host.
   if (virtual_hosts_.empty() && wildcard_virtual_host_suffixes_.empty() &&
       wildcard_virtual_host_prefixes_.empty()) {
-    return default_virtual_host_.get();
+    return default_virtual_host_;
   }
 
   absl::string_view host_header_value;
@@ -2039,7 +2041,7 @@ const VirtualHostImpl* RouteMatcher::findVirtualHost(const Http::RequestHeaderMa
   }
   const auto iter = virtual_hosts_.find(host);
   if (iter != virtual_hosts_.end()) {
-    return iter->second.get();
+    return iter->second;
   }
   if (!wildcard_virtual_host_suffixes_.empty()) {
     const VirtualHostImpl* vhost = findWildcardVirtualHost(
@@ -2057,7 +2059,7 @@ const VirtualHostImpl* RouteMatcher::findVirtualHost(const Http::RequestHeaderMa
       return vhost;
     }
   }
-  return default_virtual_host_.get();
+  return default_virtual_host_;
 }
 
 VirtualHostRoute RouteMatcher::route(const RouteCallback& cb, const Http::RequestHeaderMap& headers,

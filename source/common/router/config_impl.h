@@ -487,7 +487,6 @@ private:
   Matcher::MatchTreeSharedPtr<Http::HttpMatchingData> matcher_;
 };
 
-using VirtualHostImplSharedPtr = std::shared_ptr<VirtualHostImpl>;
 using HeaderMutationsPtr = std::unique_ptr<Http::HeaderMutations>;
 
 /**
@@ -1306,7 +1305,7 @@ private:
                absl::Status& creation_status);
 
   using WildcardVirtualHosts =
-      std::map<int64_t, absl::flat_hash_map<std::string, VirtualHostImplSharedPtr>, std::greater<>>;
+      std::map<int64_t, absl::flat_hash_map<std::string, const VirtualHostImpl*>, std::greater<>>;
   using SubstringFunction = std::function<absl::string_view(absl::string_view, int)>;
   const VirtualHostImpl* findWildcardVirtualHost(absl::string_view host,
                                                  const WildcardVirtualHosts& wildcard_virtual_hosts,
@@ -1314,10 +1313,11 @@ private:
   bool ignorePortInHostMatching() const { return ignore_port_in_host_matching_; }
 
   Stats::ScopeSharedPtr vhost_scope_;
-  absl::flat_hash_map<std::string, VirtualHostImplSharedPtr> virtual_hosts_;
+  std::vector<std::unique_ptr<VirtualHostImpl>> virtual_hosts_storage_;
+  absl::flat_hash_map<std::string, const VirtualHostImpl*> virtual_hosts_;
   // std::greater as a minor optimization to iterate from more to less specific
   //
-  // A note on using an unordered_map versus a vector of (string, VirtualHostImplSharedPtr) pairs:
+  // A note on using an unordered_map versus a vector of (string, const VirtualHostImpl*) pairs:
   //
   // Based on local benchmarks, each vector entry costs around 20ns for recall and (string)
   // comparison with a fixed cost of about 25ns. For unordered_map, the empty map costs about 65ns
@@ -1327,7 +1327,7 @@ private:
   WildcardVirtualHosts wildcard_virtual_host_suffixes_;
   WildcardVirtualHosts wildcard_virtual_host_prefixes_;
 
-  VirtualHostImplSharedPtr default_virtual_host_;
+  const VirtualHostImpl* default_virtual_host_{nullptr};
   const bool ignore_port_in_host_matching_{false};
   const Http::LowerCaseString vhost_header_;
 };
