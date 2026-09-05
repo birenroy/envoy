@@ -34,14 +34,15 @@ using testing::ReturnRef;
 class MockGrpcMuxFactory : public MuxFactory {
 public:
   MockGrpcMuxFactory(absl::string_view name = "envoy.config_mux.grpc_mux_factory") : name_(name) {
-    ON_CALL(*this, create(_, _, _, _, _, _, _, _, _, _, _, _))
+    ON_CALL(*this, create(_, _, _, _, _, _, _, _, _, _, _, _, _))
         .WillByDefault(Invoke(
             [](std::shared_ptr<Grpc::RawAsyncClient>&&, std::shared_ptr<Grpc::RawAsyncClient>&&,
                Event::Dispatcher&, Random::RandomGenerator&, Stats::Scope&,
                const envoy::config::core::v3::ApiConfigSource&, const LocalInfo::LocalInfo&,
                std::unique_ptr<Config::CustomConfigValidators>&&, BackOffStrategyPtr&&,
                OptRef<Config::XdsConfigTracker>, OptRef<Config::XdsResourcesDelegate>,
-               std::function<std::unique_ptr<Upstream::LoadStatsReporter>()>)
+               std::function<std::unique_ptr<Upstream::LoadStatsReporter>()>,
+               OptRef<Upstream::ClusterManager>)
                 -> std::shared_ptr<Config::GrpcMux> {
               return std::make_shared<NiceMock<MockGrpcMux>>();
             }));
@@ -56,7 +57,8 @@ public:
                const envoy::config::core::v3::ApiConfigSource&, const LocalInfo::LocalInfo&,
                std::unique_ptr<Config::CustomConfigValidators>&&, BackOffStrategyPtr&&,
                OptRef<Config::XdsConfigTracker>, OptRef<Config::XdsResourcesDelegate>,
-               std::function<std::unique_ptr<Upstream::LoadStatsReporter>()>));
+               std::function<std::unique_ptr<Upstream::LoadStatsReporter>()>,
+               OptRef<Upstream::ClusterManager>));
   const std::string name_;
 };
 
@@ -183,7 +185,7 @@ TEST_P(XdsManagerImplTest, AdsReplacementPrimaryOnly) {
   // Replace the created GrpcMux mock.
   std::shared_ptr<NiceMock<MockGrpcMux>> ads_mux_shared(std::make_shared<NiceMock<MockGrpcMux>>());
   NiceMock<Config::MockGrpcMux>& ads_mux(*ads_mux_shared);
-  EXPECT_CALL(factory, create(_, _, _, _, _, _, _, _, _, _, _, _))
+  EXPECT_CALL(factory, create(_, _, _, _, _, _, _, _, _, _, _, _, _))
       .WillOnce(Invoke(
           [&ads_mux_shared](std::shared_ptr<Grpc::RawAsyncClient>&& primary_async_client,
                             std::shared_ptr<Grpc::RawAsyncClient>&& failover_async_client,
@@ -192,7 +194,8 @@ TEST_P(XdsManagerImplTest, AdsReplacementPrimaryOnly) {
                             const LocalInfo::LocalInfo&,
                             std::unique_ptr<Config::CustomConfigValidators>&&, BackOffStrategyPtr&&,
                             OptRef<Config::XdsConfigTracker>, OptRef<Config::XdsResourcesDelegate>,
-                            std::function<std::unique_ptr<Upstream::LoadStatsReporter>()>)
+                            std::function<std::unique_ptr<Upstream::LoadStatsReporter>()>,
+                            OptRef<Upstream::ClusterManager>)
               -> std::shared_ptr<Config::GrpcMux> {
             EXPECT_NE(primary_async_client, nullptr);
             EXPECT_EQ(failover_async_client, nullptr);
@@ -275,7 +278,7 @@ TEST_P(XdsManagerImplTest, AdsReplacementPrimaryAndFailover) {
   std::shared_ptr<NiceMock<Config::MockGrpcMux>> ads_mux_shared(
       std::make_shared<NiceMock<Config::MockGrpcMux>>());
   NiceMock<Config::MockGrpcMux>& ads_mux(*ads_mux_shared);
-  EXPECT_CALL(factory, create(_, _, _, _, _, _, _, _, _, _, _, _))
+  EXPECT_CALL(factory, create(_, _, _, _, _, _, _, _, _, _, _, _, _))
       .WillOnce(Invoke(
           [&ads_mux_shared](std::shared_ptr<Grpc::RawAsyncClient>&& primary_async_client,
                             std::shared_ptr<Grpc::RawAsyncClient>&& failover_async_client,
@@ -284,7 +287,8 @@ TEST_P(XdsManagerImplTest, AdsReplacementPrimaryAndFailover) {
                             const LocalInfo::LocalInfo&,
                             std::unique_ptr<Config::CustomConfigValidators>&&, BackOffStrategyPtr&&,
                             OptRef<Config::XdsConfigTracker>, OptRef<Config::XdsResourcesDelegate>,
-                            std::function<std::unique_ptr<Upstream::LoadStatsReporter>()>)
+                            std::function<std::unique_ptr<Upstream::LoadStatsReporter>()>,
+                            OptRef<Upstream::ClusterManager>)
               -> std::shared_ptr<Config::GrpcMux> {
             EXPECT_NE(primary_async_client, nullptr);
             EXPECT_NE(failover_async_client, nullptr);
@@ -887,7 +891,7 @@ public:
     }
 
     if (enable_authority_a) {
-      EXPECT_CALL(grpc_mux_factory_, create(_, _, _, _, _, _, _, _, _, _, _, _))
+      EXPECT_CALL(grpc_mux_factory_, create(_, _, _, _, _, _, _, _, _, _, _, _, _))
           .WillOnce(Invoke(
               [&](std::shared_ptr<Grpc::RawAsyncClient>&& primary_async_client,
                   std::shared_ptr<Grpc::RawAsyncClient>&&, Event::Dispatcher&,
@@ -895,14 +899,15 @@ public:
                   const envoy::config::core::v3::ApiConfigSource&, const LocalInfo::LocalInfo&,
                   std::unique_ptr<Config::CustomConfigValidators>&&, BackOffStrategyPtr&&,
                   OptRef<Config::XdsConfigTracker>, OptRef<Config::XdsResourcesDelegate>,
-                  std::function<std::unique_ptr<Upstream::LoadStatsReporter>()>)
+                  std::function<std::unique_ptr<Upstream::LoadStatsReporter>()>,
+                  OptRef<Upstream::ClusterManager>)
                   -> std::shared_ptr<Config::GrpcMux> {
                 EXPECT_NE(primary_async_client, nullptr);
                 return authority_A_mux_;
               }));
     }
     if (enable_authority_b) {
-      EXPECT_CALL(grpc_mux_factory_, create(_, _, _, _, _, _, _, _, _, _, _, _))
+      EXPECT_CALL(grpc_mux_factory_, create(_, _, _, _, _, _, _, _, _, _, _, _, _))
           .WillOnce(Invoke(
               [&](std::shared_ptr<Grpc::RawAsyncClient>&& primary_async_client,
                   std::shared_ptr<Grpc::RawAsyncClient>&&, Event::Dispatcher&,
@@ -910,14 +915,15 @@ public:
                   const envoy::config::core::v3::ApiConfigSource&, const LocalInfo::LocalInfo&,
                   std::unique_ptr<Config::CustomConfigValidators>&&, BackOffStrategyPtr&&,
                   OptRef<Config::XdsConfigTracker>, OptRef<Config::XdsResourcesDelegate>,
-                  std::function<std::unique_ptr<Upstream::LoadStatsReporter>()>)
+                  std::function<std::unique_ptr<Upstream::LoadStatsReporter>()>,
+                  OptRef<Upstream::ClusterManager>)
                   -> std::shared_ptr<Config::GrpcMux> {
                 EXPECT_NE(primary_async_client, nullptr);
                 return authority_B_mux_;
               }));
     }
     if (enable_default_authority) {
-      EXPECT_CALL(grpc_mux_factory_, create(_, _, _, _, _, _, _, _, _, _, _, _))
+      EXPECT_CALL(grpc_mux_factory_, create(_, _, _, _, _, _, _, _, _, _, _, _, _))
           .WillOnce(Invoke(
               [&](std::shared_ptr<Grpc::RawAsyncClient>&& primary_async_client,
                   std::shared_ptr<Grpc::RawAsyncClient>&&, Event::Dispatcher&,
@@ -925,7 +931,8 @@ public:
                   const envoy::config::core::v3::ApiConfigSource&, const LocalInfo::LocalInfo&,
                   std::unique_ptr<Config::CustomConfigValidators>&&, BackOffStrategyPtr&&,
                   OptRef<Config::XdsConfigTracker>, OptRef<Config::XdsResourcesDelegate>,
-                  std::function<std::unique_ptr<Upstream::LoadStatsReporter>()>)
+                  std::function<std::unique_ptr<Upstream::LoadStatsReporter>()>,
+                  OptRef<Upstream::ClusterManager>)
                   -> std::shared_ptr<Config::GrpcMux> {
                 EXPECT_NE(primary_async_client, nullptr);
                 return default_mux_;
@@ -1249,7 +1256,7 @@ TEST_F(XdsManagerImplXdstpConfigSourcesTest, NonDefaultConfigSourceDeltaGrpc) {
   // Replace the created GrpcMux mock with a delta-xDS one.
   NiceMock<MockGrpcMuxFactory> factory("envoy.config_mux.new_grpc_mux_factory");
   Registry::InjectFactory<Config::MuxFactory> registry(factory);
-  EXPECT_CALL(factory, create(_, _, _, _, _, _, _, _, _, _, _, _))
+  EXPECT_CALL(factory, create(_, _, _, _, _, _, _, _, _, _, _, _, _))
       .WillOnce(
           Invoke([&](std::shared_ptr<Grpc::RawAsyncClient>&& primary_async_client,
                      std::shared_ptr<Grpc::RawAsyncClient>&&, Event::Dispatcher&,
@@ -1257,7 +1264,8 @@ TEST_F(XdsManagerImplXdstpConfigSourcesTest, NonDefaultConfigSourceDeltaGrpc) {
                      const envoy::config::core::v3::ApiConfigSource&, const LocalInfo::LocalInfo&,
                      std::unique_ptr<Config::CustomConfigValidators>&&, BackOffStrategyPtr&&,
                      OptRef<Config::XdsConfigTracker>, OptRef<Config::XdsResourcesDelegate>,
-                     std::function<std::unique_ptr<Upstream::LoadStatsReporter>()>)
+                     std::function<std::unique_ptr<Upstream::LoadStatsReporter>()>,
+                     OptRef<Upstream::ClusterManager>)
                      -> std::shared_ptr<Config::GrpcMux> {
             EXPECT_NE(primary_async_client, nullptr);
             return authority_A_mux_;
