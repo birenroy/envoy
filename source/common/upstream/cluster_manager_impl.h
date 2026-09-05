@@ -406,6 +406,8 @@ public:
   void
   createNetworkObserverRegistries(Quic::EnvoyQuicNetworkObserverRegistryFactory& factory) override;
 
+  ClusterUpdateBatchPtr createSourceBatch() override { return nullptr; }
+
 protected:
   // ClusterManagerImpl's constructor should not be invoked directly; create instances from the
   // clusterManagerFromProto() static method. The init() method must be called after construction.

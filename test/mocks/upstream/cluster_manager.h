@@ -53,6 +53,7 @@ public:
   MOCK_METHOD(const ClusterSet&, primaryClusters, ());
   MOCK_METHOD(ThreadLocalCluster*, getThreadLocalCluster, (absl::string_view cluster));
   MOCK_METHOD(bool, removeCluster, (const std::string& cluster, const bool remove_ignored));
+  MOCK_METHOD(ClusterUpdateBatchPtr, createSourceBatch, ());
   MOCK_METHOD(void, shutdown, ());
   MOCK_METHOD(bool, isShutdown, ());
   MOCK_METHOD(const absl::optional<envoy::config::core::v3::BindConfig>&, bindConfig, (), (const));
