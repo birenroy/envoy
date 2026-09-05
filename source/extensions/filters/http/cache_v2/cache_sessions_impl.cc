@@ -15,8 +15,6 @@ namespace Extensions {
 namespace HttpFilters {
 namespace CacheV2 {
 
-using CancelWrapper::cancelWrapped;
-
 class UpstreamRequestWithCacheabilityReset : public HttpSource {
 public:
   UpstreamRequestWithCacheabilityReset(
@@ -29,7 +27,7 @@ public:
         [entry = std::move(entry_), cb = std::move(cb),
          cacheable_response_checker = std::move(cacheable_response_checker_)](
             Http::ResponseHeaderMapPtr headers, EndStream end_stream) mutable {
-          if (cacheable_response_checker->isCacheableResponse(*headers)) {
+          if (headers != nullptr && cacheable_response_checker->isCacheableResponse(*headers)) {
             entry->clearUncacheableState();
           }
           cb(std::move(headers), end_stream);
@@ -88,7 +86,7 @@ static Http::ResponseHeaderMapPtr notSatisfiableHeaders() {
 }
 
 void ActiveLookupContext::getHeaders(GetHeadersCallback&& cb) {
-  absl::optional<std::vector<RawByteRange>> ranges = lookup().parseRange();
+  std::optional<std::vector<RawByteRange>> ranges = lookup().parseRange();
   if (ranges) {
     // If it's a range request, inject the appropriate modified content-range and
     // content-length headers into the response once we have the response headers.
@@ -130,8 +128,9 @@ void ActiveLookupContext::getTrailers(GetTrailersCallback&& cb) {
   entry_->wantTrailers(dispatcher(), std::move(cb));
 }
 
-std::shared_ptr<CacheSessions> CacheSessions::create(Server::Configuration::FactoryContext& context,
-                                                     std::unique_ptr<HttpCache> cache) {
+std::shared_ptr<CacheSessions>
+CacheSessions::create(Server::Configuration::ServerFactoryContext& context,
+                      std::unique_ptr<HttpCache> cache) {
   return std::make_shared<CacheSessionsImpl>(context, std::move(cache));
 }
 
@@ -248,7 +247,7 @@ void CacheSession::sendLookupResponsesAndMaybeValidationRequest(CacheEntryStatus
   lookup_subscribers_.erase(it, lookup_subscribers_.end());
   if (!lookup_subscribers_.empty()) {
     // At least one subscriber required validation.
-    return performValidation();
+    performValidation();
   }
 }
 
@@ -415,27 +414,23 @@ void CacheSession::abortBodyOutOfRangeSubscribers() {
   // real size receive null body rather than reset.
   EndStream end_stream = endStreamAfterBody();
   auto cache_sessions = cache_sessions_.lock();
-  body_subscribers_.erase(
-      std::remove_if(body_subscribers_.begin(), body_subscribers_.end(),
-                     [this, end_stream, &cache_sessions](BodySubscriber& bs)
-                         ABSL_EXCLUSIVE_LOCKS_REQUIRED(mu_) {
-                           if (bs.range_.begin() >= body_length_available_) {
-                             if (bs.range_.begin() == body_length_available_) {
-                               auto cb = std::move(bs.callback_);
-                               bs.dispatcher().post([cb = std::move(cb), end_stream]() mutable {
-                                 cb(nullptr, end_stream);
-                               });
-                             } else {
-                               bs.callback_(nullptr, EndStream::Reset);
-                             }
-                             if (cache_sessions) {
-                               cache_sessions->stats().subCacheSessionsSubscribers(1);
-                             }
-                             return true;
-                           }
-                           return false;
-                         }),
-      body_subscribers_.end());
+  std::erase_if(body_subscribers_, [this, end_stream, &cache_sessions](
+                                       BodySubscriber& bs) ABSL_EXCLUSIVE_LOCKS_REQUIRED(mu_) {
+    if (bs.range_.begin() >= body_length_available_) {
+      if (bs.range_.begin() == body_length_available_) {
+        auto cb = std::move(bs.callback_);
+        bs.dispatcher().post(
+            [cb = std::move(cb), end_stream]() mutable { cb(nullptr, end_stream); });
+      } else {
+        bs.callback_(nullptr, EndStream::Reset);
+      }
+      if (cache_sessions) {
+        cache_sessions->stats().subCacheSessionsSubscribers(1);
+      }
+      return true;
+    }
+    return false;
+  });
 }
 
 void CacheSession::maybeTriggerBodyReadForWaitingSubscriber() {
@@ -586,7 +581,8 @@ void CacheSession::getLookupResult(ActiveLookupRequestPtr lookup, ActiveLookupRe
       } else {
         sub.context_->lookup().stats().incCacheSessionsSubscribers();
         lookup_subscribers_.push_back(std::move(sub));
-        return performValidation();
+        performValidation();
+        return;
       }
     }
     auto result = std::make_unique<ActiveLookupResult>();
@@ -771,7 +767,6 @@ void CacheSession::onUncacheable(Http::ResponseHeaderMapPtr headers, EndStream e
     cache_sessions->stats().subCacheSessionsSubscribers(lookup_subscribers_.size());
   }
   lookup_subscribers_.clear();
-  return;
 }
 
 void CacheSession::onUpstreamHeaders(Http::ResponseHeaderMapPtr headers, EndStream end_stream,

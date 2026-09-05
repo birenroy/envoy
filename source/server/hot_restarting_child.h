@@ -1,5 +1,7 @@
 #pragma once
 
+#include <atomic>
+
 #include "envoy/network/parent_drained_callback_registrar.h"
 #include "envoy/server/instance.h"
 
@@ -28,7 +30,7 @@ public:
     // This is called from the thread to which the hot restart Event::Dispatcher
     // dispatches, which is expected to be the same main thread as registerListener
     // is called from.
-    absl::optional<ForwardEntry>
+    std::optional<ForwardEntry>
     getListenerForDestination(const Network::Address::Instance& address);
 
     // Registers a UdpListenerConfig and address into the map, to be matched using
@@ -59,7 +61,8 @@ public:
                                      absl::AnyInvocable<void()> action) override;
   std::unique_ptr<envoy::HotRestartMessage> getParentStats();
   void drainParentListeners();
-  absl::optional<HotRestart::AdminShutdownResponse> sendParentAdminShutdownRequest();
+  bool parentStopAcceptingRequested() const { return parent_stop_accepting_requested_.load(); }
+  std::optional<HotRestart::AdminShutdownResponse> sendParentAdminShutdownRequest();
   void sendParentTerminateRequest();
   void mergeParentStats(Stats::Store& stats_store,
                         const envoy::HotRestartMessage::Reply::Stats& stats_proto);
@@ -81,12 +84,16 @@ private:
   const bool skip_parent_stats_;
   sockaddr_un parent_address_;
   sockaddr_un parent_address_udp_forwarding_;
-  std::unique_ptr<Stats::StatMerger> stat_merger_{};
+  std::unique_ptr<Stats::StatMerger> stat_merger_;
   Stats::StatName hot_restart_generation_stat_name_;
   // There are multiple listener instances per address that must all be reactivated
   // when the parent is drained, so a multimap is used to contain them.
   std::unordered_multimap<std::string, absl::AnyInvocable<void()>>
       on_drained_actions_ ABSL_GUARDED_BY(registry_mu_);
+  // Whether this child has already asked the parent to stop accepting new connections, i.e. whether
+  // drainParentListeners() has sent the drain-listeners request. Set on the main thread and polled
+  // from worker threads, so it is atomic. Initialized true when there is no parent.
+  std::atomic<bool> parent_stop_accepting_requested_;
   Event::FileEventPtr socket_event_udp_forwarding_;
   UdpForwardingContext udp_forwarding_context_;
 };

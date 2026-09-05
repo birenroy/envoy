@@ -13,13 +13,17 @@ namespace ReverseConnection {
 // DownstreamReverseConnectionIOHandle constructor implementation
 DownstreamReverseConnectionIOHandle::DownstreamReverseConnectionIOHandle(
     Network::ConnectionSocketPtr socket, ReverseConnectionIOHandle* parent,
-    const std::string& connection_key)
+    const std::string& connection_key, uint64_t connection_id)
     : IoSocketHandleImpl(socket->ioHandle().fdDoNotUse()), owned_socket_(std::move(socket)),
-      parent_(parent), connection_key_(connection_key) {
+      parent_(parent), connection_key_(connection_key), connection_id_(connection_id) {
   ENVOY_LOG(debug,
             "DownstreamReverseConnectionIOHandle: taking ownership of socket with FD: {} for "
             "connection key: {}",
             fd_, connection_key_);
+  // Register with the parent so it can null this back-pointer if it is torn down first.
+  if (parent_ != nullptr) {
+    parent_->registerChildIoHandle(*this);
+  }
 }
 
 // DownstreamReverseConnectionIOHandle destructor implementation
@@ -28,6 +32,10 @@ DownstreamReverseConnectionIOHandle::~DownstreamReverseConnectionIOHandle() {
       debug,
       "DownstreamReverseConnectionIOHandle: destroying handle for FD: {} with connection key: {}",
       fd_, connection_key_);
+  if (parent_ != nullptr) {
+    parent_->unregisterChildIoHandle(*this);
+  }
+  SET_SOCKET_INVALID(fd_);
 }
 
 void DownstreamReverseConnectionIOHandle::onPingMessage() {
@@ -48,16 +56,6 @@ Api::IoCallUint64Result DownstreamReverseConnectionIOHandle::close() {
       "DownstreamReverseConnectionIOHandle: closing handle for FD: {} with connection key: {}", fd_,
       connection_key_);
 
-  // If we're ignoring close calls during socket hand-off, just return success.
-  if (ignore_close_and_shutdown_) {
-    ENVOY_LOG(
-        debug,
-        "DownstreamReverseConnectionIOHandle: ignoring close() call during socket hand-off for "
-        "connection key: {}",
-        connection_key_);
-    return Api::ioCallUint64ResultNoError();
-  }
-
   // Prevent double-closing by checking if already closed.
   if (fd_ < 0) {
     ENVOY_LOG(debug,
@@ -66,10 +64,14 @@ Api::IoCallUint64Result DownstreamReverseConnectionIOHandle::close() {
     return Api::ioCallUint64ResultNoError();
   }
 
+  // Similar to the IoSocketHandleImpl::close().
+  // TODO(aakugan): Implement logic for pings from the downstream side too.
+  resetFileEvents();
+
   // Notify the parent that this downstream connection has been closed.
   // This can trigger re-initiation of the reverse connection if needed.
   if (parent_) {
-    parent_->onDownstreamConnectionClosed(connection_key_);
+    parent_->onDownstreamConnectionClosed(connection_key_, connection_id_);
     ENVOY_LOG(
         debug,
         "DownstreamReverseConnectionIOHandle: notified parent of connection closure for key: {}",
@@ -80,7 +82,8 @@ Api::IoCallUint64Result DownstreamReverseConnectionIOHandle::close() {
   if (owned_socket_) {
     owned_socket_.reset();
   }
-  return IoSocketHandleImpl::close();
+  SET_SOCKET_INVALID(fd_);
+  return Api::ioCallUint64ResultNoError();
 }
 
 Api::SysCallIntResult DownstreamReverseConnectionIOHandle::shutdown(int how) {
@@ -89,17 +92,11 @@ Api::SysCallIntResult DownstreamReverseConnectionIOHandle::shutdown(int how) {
             "key: {}",
             how, fd_, connection_key_);
 
-  // If shutdown is ignored during socket hand-off, return success.
-  if (ignore_close_and_shutdown_) {
-    ENVOY_LOG(
-        debug,
-        "DownstreamReverseConnectionIOHandle: ignoring shutdown() call during socket hand-off for "
-        "connection key: {}",
-        connection_key_);
-    return Api::SysCallIntResult{0, 0};
+  if (owned_socket_) {
+    return owned_socket_->ioHandle().shutdown(how);
   }
 
-  return IoSocketHandleImpl::shutdown(how);
+  return Api::SysCallIntResult{0, 0};
 }
 
 } // namespace ReverseConnection

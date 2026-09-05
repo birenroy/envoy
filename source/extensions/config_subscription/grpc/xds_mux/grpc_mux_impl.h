@@ -71,7 +71,10 @@ public:
   // TODO: figure out the correct fix: https://github.com/envoyproxy/envoy/issues/15072.
   static void shutdownAll();
 
-  void shutdown() override { shutdown_ = true; }
+  void shutdown() override {
+    shutdown_ = true;
+    xds_config_tracker_.reset();
+  }
   bool isShutdown() { return shutdown_; }
 
   // TODO (dmitri-d) return a naked pointer instead of the wrapper once the legacy mux has been
@@ -99,16 +102,17 @@ public:
     handleStreamEstablishmentFailure(next_attempt_may_send_initial_resource_version);
   }
   void onWriteable() override { trySendDiscoveryRequests(); }
-  void onDiscoveryResponse(std::unique_ptr<RS>&& message,
+  void onDiscoveryResponse(ResponseProtoPtr<RS>&& message,
                            ControlPlaneStats& control_plane_stats) override {
     genericHandleResponse(message->type_url(), *message, control_plane_stats);
   }
 
-  absl::Status
-  updateMuxSource(Grpc::RawAsyncClientSharedPtr&& primary_async_client,
-                  Grpc::RawAsyncClientSharedPtr&& failover_async_client, Stats::Scope& scope,
-                  BackOffStrategyPtr&& backoff_strategy,
-                  const envoy::config::core::v3::ApiConfigSource& ads_config_source) override;
+  absl::Status updateMuxSource(Grpc::RawAsyncClientSharedPtr&& primary_async_client,
+                               Grpc::RawAsyncClientSharedPtr&& failover_async_client,
+                               Stats::Scope& scope, BackOffStrategyPtr&& backoff_strategy,
+                               const envoy::config::core::v3::ApiConfigSource& ads_config_source,
+                               std::function<std::unique_ptr<Upstream::LoadStatsReporter>()>
+                                   load_stats_reporter_factory = nullptr) override;
 
   EdsResourcesCacheOptRef edsResourcesCache() override {
     return makeOptRefFromPtr(eds_resources_cache_.get());
@@ -199,7 +203,7 @@ private:
   // any). First, prioritizes ACKs over non-ACK subscription interest updates. Then, prioritizes
   // non-ACK updates in the order the various types of subscriptions were activated (as tracked by
   // subscription_ordering_).
-  absl::optional<std::string> whoWantsToSendDiscoveryRequest();
+  std::optional<std::string> whoWantsToSendDiscoveryRequest();
 
   // Invoked when dynamic context parameters change for a resource type.
   void onDynamicContextUpdate(absl::string_view resource_type_url);
@@ -305,9 +309,10 @@ public:
                                    SubscriptionCallbacks&, OpaqueResourceDecoderSharedPtr,
                                    const SubscriptionOptions&) override;
 
-  absl::Status updateMuxSource(Grpc::RawAsyncClientSharedPtr&&, Grpc::RawAsyncClientSharedPtr&&,
-                               Stats::Scope&, BackOffStrategyPtr&&,
-                               const envoy::config::core::v3::ApiConfigSource&) override {
+  absl::Status updateMuxSource(
+      Grpc::RawAsyncClientSharedPtr&&, Grpc::RawAsyncClientSharedPtr&&, Stats::Scope&,
+      BackOffStrategyPtr&&, const envoy::config::core::v3::ApiConfigSource&,
+      std::function<std::unique_ptr<Upstream::LoadStatsReporter>()> = nullptr) override {
     return absl::UnimplementedError("");
   }
 

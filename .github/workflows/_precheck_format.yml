@@ -5,6 +5,8 @@ permissions:
 
 on:
   workflow_call:
+    secrets:
+      dockerhub-token:
     inputs:
       request:
         type: string
@@ -21,6 +23,8 @@ concurrency:
 
 jobs:
   format:
+    secrets:
+      dockerhub-token: ${{ secrets.dockerhub-token }}
     permissions:
       actions: read
       contents: read
@@ -39,6 +43,8 @@ jobs:
         ERROR
         error:
         Error:
+        FAILED
+        FAIL:
       rbe: true
       target: ${{ matrix.target }}
       trusted: ${{ inputs.trusted }}

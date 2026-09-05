@@ -18,6 +18,7 @@ envoy_extension_cc_test(
     srcs = ["otlp_log_utils_test.cc"],
     extension_names = ["envoy.access_loggers.open_telemetry"],
     deps = [
+        "//source/common/formatter:serializer_lib",
         "//source/common/http:header_map_lib",
         "//source/common/router:string_accessor_lib",
         "//source/common/stream_info:filter_state_lib",
@@ -34,7 +35,7 @@ envoy_extension_cc_test(
     name = "grpc_access_log_impl_test",
     srcs = ["grpc_access_log_impl_test.cc"],
     extension_names = ["envoy.access_loggers.open_telemetry"],
-    rbe_pool = "6gig",
+    rbe_pool = "linux_x64_small",
     deps = [
         "//source/common/buffer:zero_copy_input_stream_lib",
         "//source/common/protobuf",
@@ -54,14 +55,13 @@ envoy_extension_cc_test(
     name = "http_access_log_impl_test",
     srcs = ["http_access_log_impl_test.cc"],
     extension_names = ["envoy.access_loggers.open_telemetry"],
-    rbe_pool = "6gig",
+    rbe_pool = "linux_x64_small",
     deps = [
         "//source/common/http:http_service_headers_lib",
         "//source/extensions/access_loggers/open_telemetry:http_access_log_lib",
         "//test/mocks/event:event_mocks",
         "//test/mocks/server:factory_context_mocks",
         "//test/mocks/server:server_factory_context_mocks",
-        "//test/mocks/stats:stats_mocks",
         "//test/mocks/thread_local:thread_local_mocks",
         "//test/mocks/upstream:cluster_manager_mocks",
         "//test/test_common:utility_lib",
@@ -72,7 +72,7 @@ envoy_extension_cc_test(
     name = "access_log_impl_test",
     srcs = ["access_log_impl_test.cc"],
     extension_names = ["envoy.access_loggers.open_telemetry"],
-    rbe_pool = "6gig",
+    rbe_pool = "linux_x64_small",
     deps = [
         "//envoy/common:time_interface",
         "//source/common/formatter:formatter_extension_lib",
@@ -80,10 +80,8 @@ envoy_extension_cc_test(
         "//source/common/router:string_accessor_lib",
         "//source/extensions/access_loggers/open_telemetry:access_log_lib",
         "//test/mocks/access_log:access_log_mocks",
-        "//test/mocks/grpc:grpc_mocks",
         "//test/mocks/local_info:local_info_mocks",
         "//test/mocks/server:server_mocks",
-        "//test/mocks/ssl:ssl_mocks",
         "//test/mocks/stream_info:stream_info_mocks",
         "//test/mocks/thread_local:thread_local_mocks",
         "@envoy_api//envoy/config/core/v3:pkg_cc_proto",
@@ -98,7 +96,7 @@ envoy_extension_cc_test(
     name = "config_test",
     srcs = ["config_test.cc"],
     extension_names = ["envoy.access_loggers.open_telemetry"],
-    rbe_pool = "6gig",
+    rbe_pool = "linux_x64_small",
     deps = [
         "//source/common/formatter:formatter_extension_lib",
         "//source/extensions/access_loggers/open_telemetry:access_log_lib",
@@ -114,7 +112,7 @@ envoy_extension_cc_test(
     size = "large",
     srcs = ["access_log_integration_test.cc"],
     extension_names = ["envoy.access_loggers.open_telemetry"],
-    rbe_pool = "6gig",
+    rbe_pool = "linux_x64_small",
     deps = [
         "//source/common/buffer:zero_copy_input_stream_lib",
         "//source/common/formatter:formatter_extension_lib",
@@ -143,7 +141,7 @@ envoy_extension_cc_test(
         ],
     }),
     extension_names = ["envoy.access_loggers.open_telemetry"],
-    rbe_pool = "6gig",
+    rbe_pool = "linux_x64_small",
     tags = ["skip_on_windows"],
     deps = [
         "//source/common/formatter:formatter_extension_lib",
@@ -173,7 +171,7 @@ envoy_extension_cc_test(
 envoy_cc_benchmark_binary(
     name = "substitution_formatter_speed_test",
     srcs = ["substitution_formatter_speed_test.cc"],
-    rbe_pool = "6gig",
+    rbe_pool = "linux_x64_small",
     deps = [
         "//source/common/formatter:formatter_extension_lib",
         "//source/common/http:header_map_lib",

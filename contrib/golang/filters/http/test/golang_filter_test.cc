@@ -19,6 +19,7 @@
 #include "test/test_common/environment.h"
 #include "test/test_common/logging.h"
 #include "test/test_common/printers.h"
+#include "test/test_common/status_utility.h"
 #include "test/test_common/utility.h"
 
 #include "absl/strings/str_format.h"
@@ -31,15 +32,17 @@ using testing::AtLeast;
 using testing::InSequence;
 using testing::Invoke;
 using testing::Return;
-using testing::SaveArg;
 
 namespace Envoy {
 namespace Extensions {
 namespace HttpFilters {
 namespace Golang {
 
+using Envoy::StatusHelpers::HasStatus;
+
 class TestFilter : public Filter {
 public:
+  using Filter::continueStatus;
   using Filter::continueStatusInternal;
   using Filter::Filter;
   DecodingProcessorState& testDecodingState() { return decoding_state_; }
@@ -87,8 +90,8 @@ public:
     Dso::DsoManager<Dso::HttpFilterDsoImpl>::cleanUpForTest();
   }
 
-  void setup(const std::string& lib_id, const std::string& lib_path,
-             const std::string& plugin_name) {
+  absl::Status setupWithStatus(const std::string& lib_id, const std::string& lib_path,
+                               const std::string& plugin_name) {
     const auto yaml_fmt = R"EOF(
     library_id: %s
     library_path: %s
@@ -108,8 +111,14 @@ public:
 
     envoy::extensions::filters::http::golang::v3alpha::ConfigsPerRoute per_route_proto_config;
     setupDso(lib_id, lib_path, plugin_name);
-    setupConfig(proto_config, per_route_proto_config, plugin_name);
+    RETURN_IF_NOT_OK(setupConfig(proto_config, per_route_proto_config, plugin_name));
     setupFilter(plugin_name);
+    return absl::OkStatus();
+  }
+
+  void setup(const std::string& lib_id, const std::string& lib_path,
+             const std::string& plugin_name) {
+    ASSERT_TRUE(setupWithStatus(lib_id, lib_path, plugin_name).ok());
   }
 
   std::string genSoPath() {
@@ -121,7 +130,7 @@ public:
     Dso::DsoManager<Dso::HttpFilterDsoImpl>::load(id, path, plugin_name);
   }
 
-  void setupConfig(
+  absl::Status setupConfig(
       envoy::extensions::filters::http::golang::v3alpha::Config& proto_config,
       envoy::extensions::filters::http::golang::v3alpha::ConfigsPerRoute& per_route_proto_config,
       std::string plugin_name) {
@@ -129,10 +138,11 @@ public:
     config_ = std::make_shared<FilterConfig>(
         proto_config, Dso::DsoManager<Dso::HttpFilterDsoImpl>::getDsoByPluginName(plugin_name), "",
         context_);
-    config_->newGoPluginConfig();
+    RETURN_IF_NOT_OK(config_->newGoPluginConfig());
     // Setup per route config for Golang filter.
     per_route_config_ =
         std::make_shared<FilterConfigPerRoute>(per_route_proto_config, server_factory_context_);
+    return absl::OkStatus();
   }
 
   void setupFilter(const std::string& plugin_name) {
@@ -195,8 +205,9 @@ TEST_F(GolangHttpFilterTest, SetHeaderAtWrongStage) {
 // invalid config for routeconfig filter
 TEST_F(GolangHttpFilterTest, InvalidConfigForRouteConfigFilter) {
   InSequence s;
-  EXPECT_THROW_WITH_REGEX(setup(ROUTECONFIG, genSoPath(), ROUTECONFIG), EnvoyException,
-                          "golang filter failed to parse plugin config");
+  auto status = setupWithStatus(ROUTECONFIG, genSoPath(), ROUTECONFIG);
+  EXPECT_THAT(status, HasStatus(absl::StatusCode::kInvalidArgument,
+                                testing::HasSubstr("golang filter failed to parse plugin config")));
 }
 
 // Regression test for https://github.com/envoyproxy/envoy/issues/44320.
@@ -228,7 +239,7 @@ TEST_F(GolangHttpFilterTest, BufferedDataAfterDestroyDuringContinue) {
   TestUtility::loadFromYaml(yaml, proto_config);
   NiceMock<Server::Configuration::MockFactoryContext> mock_context;
   auto config = std::make_shared<FilterConfig>(proto_config, dso_lib, "", mock_context);
-  config->newGoPluginConfig();
+  ASSERT_TRUE(config->newGoPluginConfig().ok());
 
   Network::Address::InstanceConstSharedPtr addr(
       (*Network::Address::PipeInstance::create("/test/test.sock")).release());
@@ -262,6 +273,69 @@ TEST_F(GolangHttpFilterTest, BufferedDataAfterDestroyDuringContinue) {
       << "envoyGoFilterOnHttpData must not be called after onDestroy";
 
   ASSERT_NE(nullptr, filter->testReq());
+  delete filter->testReq();
+}
+
+// Regression test for #44704: when the Go plugin calls continueStatus() from inside
+// the OnHttpHeader cgo callback, the call must post to the dispatcher rather than
+// transition the C++ state machine inline; otherwise handleHeaderGolangStatus trips
+// its ASSERT(filterState == ProcessingHeader) once the cgo call returns.
+TEST_F(GolangHttpFilterTest, ContinueStatusFromInsideHeaderCgoCallbackPostsToDispatcher) {
+  auto dso_lib = std::make_shared<NiceMock<Dso::MockHttpFilterDsoImpl>>();
+  ON_CALL(*dso_lib, envoyGoFilterNewHttpPluginConfig(_)).WillByDefault(Return(1));
+
+  const auto yaml = R"EOF(
+    library_id: test
+    library_path: test
+    plugin_name: test
+    )EOF";
+  envoy::extensions::filters::http::golang::v3alpha::Config proto_config;
+  TestUtility::loadFromYaml(yaml, proto_config);
+  NiceMock<Server::Configuration::MockFactoryContext> mock_context;
+  auto config = std::make_shared<FilterConfig>(proto_config, dso_lib, "", mock_context);
+  ASSERT_TRUE(config->newGoPluginConfig().ok());
+
+  NiceMock<Http::MockStreamDecoderFilterCallbacks> mock_callbacks;
+  NiceMock<Http::MockStreamEncoderFilterCallbacks> mock_enc_callbacks;
+  NiceMock<Envoy::Network::MockConnection> mock_connection;
+  auto addr = (*Network::Address::PipeInstance::create("/test/test.sock")).release();
+  Network::Address::InstanceConstSharedPtr addr_ptr(addr);
+  ON_CALL(mock_callbacks, connection())
+      .WillByDefault(Return(OptRef<const Network::Connection>{mock_connection}));
+  mock_connection.stream_info_.downstream_connection_info_provider_->setRemoteAddress(addr_ptr);
+  mock_connection.stream_info_.downstream_connection_info_provider_->setLocalAddress(addr_ptr);
+
+  EXPECT_CALL(mock_callbacks.dispatcher_, isThreadSafe()).WillRepeatedly(Return(true));
+
+  // Capture the posted closure instead of running it inline (the default
+  // MockDispatcher::post() ON_CALL invokes the callback synchronously, which would
+  // defeat the point of the regression test).
+  Event::PostCb captured_post;
+  EXPECT_CALL(mock_callbacks.dispatcher_, post(_)).WillOnce([&captured_post](Event::PostCb cb) {
+    captured_post = std::move(cb);
+  });
+
+  auto filter = std::make_shared<TestFilter>(config, dso_lib, 0);
+  filter->setDecoderFilterCallbacks(mock_callbacks);
+  filter->setEncoderFilterCallbacks(mock_enc_callbacks);
+
+  EXPECT_CALL(*dso_lib, envoyGoFilterOnHttpHeader(_, _, _, _))
+      .WillOnce(Invoke([&filter](processState*, int, int, uint64_t) -> uint64_t {
+        auto status = filter->continueStatus(filter->testDecodingState(), GolangStatus::Continue);
+        EXPECT_EQ(CAPIStatus::CAPIOK, status);
+        return static_cast<uint64_t>(GolangStatus::Running);
+      }));
+
+  // No inline continueDecoding while the cgo frame is on the stack: state must still
+  // be ProcessingHeader when handleHeaderGolangStatus runs.
+  EXPECT_CALL(mock_callbacks, continueDecoding()).Times(0);
+
+  Http::TestRequestHeaderMapImpl request_headers{{":path", "/"}};
+  EXPECT_EQ(Http::FilterHeadersStatus::StopIteration,
+            filter->decodeHeaders(request_headers, false));
+  EXPECT_TRUE(captured_post != nullptr) << "continueStatus must defer via dispatcher.post()";
+
+  filter->onDestroy();
   delete filter->testReq();
 }
 

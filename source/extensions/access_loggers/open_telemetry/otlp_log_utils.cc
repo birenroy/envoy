@@ -106,16 +106,18 @@ uint64_t getBufferSizeBytes(
 std::vector<std::string> getFilterStateObjectsToLog(
     const envoy::extensions::access_loggers::open_telemetry::v3::OpenTelemetryAccessLogConfig&
         config) {
+  // NOLINTNEXTLINE(modernize-return-braced-init-list)
   return std::vector<std::string>(config.filter_state_objects_to_log().begin(),
                                   config.filter_state_objects_to_log().end());
 }
 
 std::vector<Tracing::CustomTagConstSharedPtr> getCustomTags(
     const envoy::extensions::access_loggers::open_telemetry::v3::OpenTelemetryAccessLogConfig&
-        config) {
+        config,
+    const Formatter::CommandParserPtrVector& command_parsers) {
   std::vector<Tracing::CustomTagConstSharedPtr> custom_tags;
   for (const auto& custom_tag : config.custom_tags()) {
-    custom_tags.push_back(Tracing::CustomTagUtility::createCustomTag(custom_tag));
+    custom_tags.push_back(Tracing::CustomTagUtility::createCustomTag(custom_tag, command_parsers));
   }
   return custom_tags;
 }

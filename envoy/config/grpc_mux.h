@@ -1,19 +1,26 @@
 #pragma once
 
+#include <functional>
 #include <memory>
+#include <string>
+#include <vector>
 
 #include "envoy/common/backoff_strategy.h"
-#include "envoy/common/exception.h"
 #include "envoy/common/pure.h"
-#include "envoy/config/custom_config_validators.h"
+#include "envoy/config/core/v3/config_source.pb.h"
 #include "envoy/config/eds_resources_cache.h"
 #include "envoy/config/subscription.h"
 #include "envoy/grpc/async_client.h"
+#include "envoy/stats/scope.h"
 #include "envoy/stats/stats_macros.h"
 #include "envoy/upstream/load_stats_reporter.h"
 
 #include "source/common/common/cleanup.h"
-#include "source/common/protobuf/protobuf.h"
+#include "source/common/protobuf/arena_wrapped_proto.h"
+
+#include "absl/base/attributes.h"
+#include "absl/container/flat_hash_set.h"
+#include "absl/status/status.h"
 
 namespace Envoy {
 namespace Config {
@@ -120,11 +127,13 @@ public:
   /**
    * Updates the current gRPC-Mux object to use a new gRPC client, and config.
    */
-  virtual absl::Status
-  updateMuxSource(Grpc::RawAsyncClientSharedPtr&& primary_async_client,
-                  Grpc::RawAsyncClientSharedPtr&& failover_async_client, Stats::Scope& scope,
-                  BackOffStrategyPtr&& backoff_strategy,
-                  const envoy::config::core::v3::ApiConfigSource& ads_config_source) PURE;
+  virtual absl::Status updateMuxSource(
+      Grpc::RawAsyncClientSharedPtr&& primary_async_client,
+      Grpc::RawAsyncClientSharedPtr&& failover_async_client, Stats::Scope& scope,
+      BackOffStrategyPtr&& backoff_strategy,
+      const envoy::config::core::v3::ApiConfigSource& ads_config_source,
+      std::function<std::unique_ptr<Upstream::LoadStatsReporter>()> load_stats_reporter_factory =
+          nullptr) PURE;
 
   /**
    * Returns a load-stats-reporter that was created for the gRPC-Mux.
@@ -143,7 +152,7 @@ public:
 using GrpcMuxPtr = std::unique_ptr<GrpcMux>;
 using GrpcMuxSharedPtr = std::shared_ptr<GrpcMux>;
 
-template <class ResponseProto> using ResponseProtoPtr = std::unique_ptr<ResponseProto>;
+template <class ResponseProto> using ResponseProtoPtr = ArenaWrappedProto<ResponseProto>;
 /**
  * A grouping of callbacks that a GrpcMux should provide to its GrpcStream.
  */

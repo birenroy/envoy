@@ -20,9 +20,15 @@
 #include "test/test_common/stats_utility.h"
 #include "test/test_common/utility.h"
 
+#include "gmock/gmock.h"
 using testing::NiceMock;
 using testing::Ref;
 using testing::ReturnRef;
+
+using testing::AnyOf;
+using testing::Contains;
+using testing::HasSubstr;
+using testing::Key;
 
 namespace Envoy {
 namespace Server {
@@ -147,7 +153,7 @@ TEST_F(PrometheusStatsFormatterTest, MetricName) {
   Stats::CustomStatNamespacesImpl custom_namespaces;
   std::string raw = "vulture.eats-liver";
   std::string expected = "envoy_vulture_eats_liver";
-  auto actual = PrometheusStatsFormatter::metricName(raw, custom_namespaces);
+  auto actual = PrometheusStatsFormatter::metricName(std::move(raw), custom_namespaces);
   EXPECT_TRUE(actual.has_value());
   EXPECT_EQ(expected, actual.value());
 }
@@ -156,7 +162,7 @@ TEST_F(PrometheusStatsFormatterTest, SanitizeMetricName) {
   Stats::CustomStatNamespacesImpl custom_namespaces;
   std::string raw = "An.artist.plays-violin@019street";
   std::string expected = "envoy_An_artist_plays_violin_019street";
-  auto actual = PrometheusStatsFormatter::metricName(raw, custom_namespaces);
+  auto actual = PrometheusStatsFormatter::metricName(std::move(raw), custom_namespaces);
   EXPECT_EQ(expected, actual.value());
 }
 
@@ -164,7 +170,7 @@ TEST_F(PrometheusStatsFormatterTest, SanitizeMetricNameDigitFirst) {
   Stats::CustomStatNamespacesImpl custom_namespaces;
   std::string raw = "3.artists.play-violin@019street";
   std::string expected = "envoy_3_artists_play_violin_019street";
-  auto actual = PrometheusStatsFormatter::metricName(raw, custom_namespaces);
+  auto actual = PrometheusStatsFormatter::metricName(std::move(raw), custom_namespaces);
   EXPECT_TRUE(actual.has_value());
   EXPECT_EQ(expected, actual.value());
 }
@@ -174,7 +180,7 @@ TEST_F(PrometheusStatsFormatterTest, CustomNamespace) {
   custom_namespaces.registerStatNamespace("promstattest");
   std::string raw = "promstattest.vulture.eats-liver";
   std::string expected = "vulture_eats_liver";
-  auto actual = PrometheusStatsFormatter::metricName(raw, custom_namespaces);
+  auto actual = PrometheusStatsFormatter::metricName(std::move(raw), custom_namespaces);
   EXPECT_TRUE(actual.has_value());
   EXPECT_EQ(expected, actual.value());
 }
@@ -183,7 +189,7 @@ TEST_F(PrometheusStatsFormatterTest, CustomNamespaceWithInvalidPromnamespace) {
   Stats::CustomStatNamespacesImpl custom_namespaces;
   custom_namespaces.registerStatNamespace("promstattest");
   std::string raw = "promstattest.1234abcd.eats-liver";
-  auto actual = PrometheusStatsFormatter::metricName(raw, custom_namespaces);
+  auto actual = PrometheusStatsFormatter::metricName(std::move(raw), custom_namespaces);
   EXPECT_FALSE(actual.has_value());
 }
 
@@ -198,7 +204,7 @@ TEST_F(PrometheusStatsFormatterTest, FormattedTags) {
   tags.push_back(tag3);
   std::string expected = "a_tag_name=\"a.tag-value\",another_tag_name=\"another_tag-value\","
                          "replace_problematic=\"val\\\"ue with\\\\ some\\n issues\"";
-  auto actual = PrometheusStatsFormatter::formattedTags(tags);
+  auto actual = PrometheusStatsFormatter::formattedTags(std::move(tags));
   EXPECT_EQ(expected, actual);
 }
 
@@ -1488,7 +1494,7 @@ TEST_F(PrometheusStatsFormatterTest, ContentNegotiationTextPlainAcceptHeader) {
   EXPECT_TRUE(response_headers.getContentTypeValue().empty());
 
   std::string output = response.toString();
-  EXPECT_TRUE(output.find("# TYPE") != std::string::npos);
+  EXPECT_THAT(output, HasSubstr("# TYPE"));
 }
 
 TEST_F(PrometheusStatsFormatterTest, ContentNegotiationDefaultToText) {
@@ -1506,7 +1512,7 @@ TEST_F(PrometheusStatsFormatterTest, ContentNegotiationDefaultToText) {
 
   // Should default to text format
   std::string output = response.toString();
-  EXPECT_TRUE(output.find("# TYPE") != std::string::npos);
+  EXPECT_THAT(output, HasSubstr("# TYPE"));
 }
 
 TEST_F(PrometheusStatsFormatterTest, QueryParamOverridesAcceptHeader) {
@@ -2341,8 +2347,8 @@ TEST_F(RealHistogramNativePrometheusTest, NativeHistogramDenseDataAccuracy) {
         NativeHistogramDecoder::expectedBucketIndex(schema, static_cast<double>(v));
 
     // The bucket should exist
-    EXPECT_TRUE(buckets.count(expected_idx) > 0 || buckets.count(expected_idx - 1) > 0 ||
-                buckets.count(expected_idx + 1) > 0)
+    EXPECT_THAT(buckets, AnyOf(Contains(Key(expected_idx)), Contains(Key(expected_idx - 1)),
+                               Contains(Key(expected_idx + 1))))
         << "Value " << v << " should be in bucket near index " << expected_idx;
   }
 

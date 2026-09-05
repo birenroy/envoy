@@ -25,10 +25,25 @@ envoy_cc_test(
     deps = [
         "//source/extensions/filters/http/mcp_json_rest_bridge:mcp_json_rest_bridge_filter_lib",
         "//test/mocks/http:http_mocks",
+        "//test/test_common:status_utility_lib",
         "//test/test_common:utility_lib",
         "@envoy_api//envoy/extensions/filters/http/mcp_json_rest_bridge/v3:pkg_cc_proto",
         "@nlohmann_json//:json",
-        "@ocp-diag-core//ocpdiag/core/testing:parse_text_proto",
+        "@ocp-diag-core//ocpdiag/core/testing:status_matchers",
+    ],
+)
+
+envoy_cc_test(
+    name = "endpoint_keyed_filtering_test",
+    srcs = ["endpoint_keyed_filtering_test.cc"],
+    deps = [
+        "//source/extensions/filters/http/mcp_json_rest_bridge:mcp_json_rest_bridge_filter_lib",
+        "//test/mocks/http:http_mocks",
+        "//test/test_common:status_utility_lib",
+        "//test/test_common:utility_lib",
+        "@envoy_api//envoy/extensions/filters/http/mcp_json_rest_bridge/v3:pkg_cc_proto",
+        "@nlohmann_json//:json",
+        "@ocp-diag-core//ocpdiag/core/testing:status_matchers",
     ],
 )
 
@@ -39,7 +54,6 @@ envoy_cc_test(
         "//source/extensions/filters/http/mcp_json_rest_bridge:http_request_builder_lib",
         "//test/test_common:status_utility_lib",
         "@nlohmann_json//:json",
-        "@ocp-diag-core//ocpdiag/core/testing:parse_text_proto",
     ],
 )
 
@@ -48,8 +62,20 @@ envoy_cc_test(
     srcs = ["mcp_json_rest_bridge_integration_test.cc"],
     deps = [
         "//source/extensions/filters/http/mcp_json_rest_bridge:config",
+        "//test/integration:fake_access_log_lib",
         "//test/integration:http_integration_lib",
+        "//test/test_common:registry_lib",
         "//test/test_common:utility_lib",
+        "@envoy_api//envoy/extensions/filters/http/mcp_json_rest_bridge/v3:pkg_cc_proto",
+        "@nlohmann_json//:json",
+    ],
+)
+
+envoy_cc_test(
+    name = "trace_context_test",
+    srcs = ["trace_context_test.cc"],
+    deps = [
+        "//source/extensions/filters/http/mcp_json_rest_bridge:trace_context_lib",
         "@nlohmann_json//:json",
     ],
 )

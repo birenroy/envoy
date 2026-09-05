@@ -38,9 +38,9 @@ running tests that reflects the latest built Windows 2019 Envoy image.
 
 # Build image base and compiler versions
 
-* `envoyproxy/envoy-build-ubuntu` &mdash; based on Ubuntu 20.04 (Focal) with GCC 13 and Clang 18 compiler.
+* `envoyproxy/envoy-build-ubuntu` &mdash; based on Ubuntu 20.04 (Focal) with GCC 13 and Clang 22 compiler.
 
-The source for theis images is located in the [envoyproxy/envoy-build-tools](https://github.com/envoyproxy/envoy-build-tools)
+The source for these images is located in the [envoyproxy/envoy-build-tools](https://github.com/envoyproxy/envoy-build-tools)
 repository.
 
 The default toolchain uses the Clang compiler with libc++ for all Linux CI runs with tests. This is configured with `--config=clang`. We have an additional Linux CI run with GCC which builds binary only, configured with `--config=gcc`.
@@ -187,7 +187,7 @@ The `./ci/run_envoy_docker.sh './ci/do_ci.sh <TARGET>'` targets are:
 * `fuzz <test>` &mdash; build and run a specified fuzz test or test dir under `-c dbg --config=asan-fuzzer` with clang. If specifying a single fuzz test, must use the full target name with "_with_libfuzzer" for `<test>`.
 * `compile_time_options` &mdash; build Envoy and run tests with various compile-time options toggled to their non-default state, to ensure they still build.
 * `compile_time_options <test>` &mdash; build Envoy and run a specified test or test dir with various compile-time options toggled to their non-default state, to ensure they still build.
-* `clang_tidy <files>` &mdash; build and run clang-tidy specified source files, if no files specified, runs against the diff with the last GitHub commit.
+* `clang-tidy <targets>` &mdash; build and run clang-tidy on the specified Bazel targets. If no targets are provided, it uses `CLANG_TIDY_TARGETS` when set, otherwise the default target set.
 * `check_proto_format`&mdash; check configuration, formatting and build issues in API proto files.
 * `fix_proto_format`&mdash; fix configuration, formatting and build issues in API proto files.
 * `check_and_fix_proto_format` &mdash; check and fix configuration, fomatting and build issues in API proto files.
@@ -237,6 +237,6 @@ See the Dockerfiles and build scripts there for building a new image.
 
 The macOS CI build is part of the [Azure Pipelines](https://dev.azure.com/cncf/envoy/_build) workflow.
 Dependencies are installed by the `ci/mac_ci_setup.sh` script, via [Homebrew](https://brew.sh),
-which is pre-installed on the [Azure Pipelines macOS image](https://github.com/actions/virtual-environments/blob/main/images/macos/macos-10.15-Readme.md).
+which is pre-installed on the [macOS runner image](https://github.com/actions/runner-images/tree/main/images/macos).
 The dependencies are cached and re-installed on every build. The `ci/mac_ci_steps.sh` script executes the specific commands that
 build and test Envoy. Note that the full version of Xcode (not just Command Line Tools) is required.

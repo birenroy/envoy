@@ -60,7 +60,8 @@ public:
       composite_config.add_clusters()->set_name("cluster_1");
       composite_config.add_clusters()->set_name("cluster_2");
 
-      composite_cluster->mutable_cluster_type()->mutable_typed_config()->PackFrom(composite_config);
+      std::ignore = composite_cluster->mutable_cluster_type()->mutable_typed_config()->PackFrom(
+          composite_config);
     });
 
     // Configure the route to use our composite cluster.
@@ -86,7 +87,7 @@ public:
     HttpIntegrationTest::initialize();
 
     // Verify clusters are created.
-    test_server_->waitForGaugeGe("cluster_manager.active_clusters", 4);
+    test_server_->waitForGauge("cluster_manager.active_clusters", testing::Ge(4));
   }
 
   void setNumRetries(uint32_t retries) { num_retries_ = retries; }
@@ -122,6 +123,7 @@ TEST_P(CompositeClusterIntegrationTest, BasicRetryProgression) {
   ASSERT_TRUE(upstream_request_->waitForEndStream(*dispatcher_));
   upstream_request_->encodeHeaders(Http::TestResponseHeaderMapImpl{{":status", "503"}}, true);
   ASSERT_TRUE(fake_upstream_connection_->close());
+  ASSERT_TRUE(fake_upstream_connection_->waitForDisconnect());
   fake_upstream_connection_.reset();
 
   // First retry should go to cluster_1 - return 503 to trigger another retry.
@@ -130,6 +132,7 @@ TEST_P(CompositeClusterIntegrationTest, BasicRetryProgression) {
   ASSERT_TRUE(upstream_request_->waitForEndStream(*dispatcher_));
   upstream_request_->encodeHeaders(Http::TestResponseHeaderMapImpl{{":status", "503"}}, true);
   ASSERT_TRUE(fake_upstream_connection_->close());
+  ASSERT_TRUE(fake_upstream_connection_->waitForDisconnect());
   fake_upstream_connection_.reset();
 
   // Second retry should go to cluster_2 - return 200.
@@ -199,6 +202,7 @@ TEST_P(CompositeClusterIntegrationTest, OverflowFails) {
     ASSERT_TRUE(upstream_request_->waitForEndStream(*dispatcher_));
     upstream_request_->encodeHeaders(Http::TestResponseHeaderMapImpl{{":status", "503"}}, true);
     ASSERT_TRUE(fake_upstream_connection_->close());
+    ASSERT_TRUE(fake_upstream_connection_->waitForDisconnect());
     fake_upstream_connection_.reset();
   }
 
@@ -235,6 +239,7 @@ TEST_P(CompositeClusterIntegrationTest, AttemptCountVerification) {
   EXPECT_EQ("1", upstream_request_->headers().getEnvoyAttemptCountValue());
   upstream_request_->encodeHeaders(Http::TestResponseHeaderMapImpl{{":status", "503"}}, true);
   ASSERT_TRUE(fake_upstream_connection_->close());
+  ASSERT_TRUE(fake_upstream_connection_->waitForDisconnect());
   fake_upstream_connection_.reset();
 
   // First retry (attempt count = 2) should go to cluster_1.
@@ -320,6 +325,7 @@ TEST_P(CompositeClusterIntegrationTest, RequestDetailsPreservedThroughRetries) {
   // Return 503 to trigger retry.
   upstream_request_->encodeHeaders(Http::TestResponseHeaderMapImpl{{":status", "503"}}, true);
   ASSERT_TRUE(fake_upstream_connection_->close());
+  ASSERT_TRUE(fake_upstream_connection_->waitForDisconnect());
   fake_upstream_connection_.reset();
 
   // First retry should go to cluster_1 - return 200.

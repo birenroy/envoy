@@ -251,17 +251,18 @@ TEST_P(XdsManagerImplTest, AdsReplacementPrimaryOnly) {
                             new_ads_config);
 
   Grpc::RawAsyncClientSharedPtr failover_client;
-  EXPECT_CALL(ads_mux, updateMuxSource(_, _, _, _, ProtoEq(new_ads_config)))
-      .WillOnce(Invoke([](Grpc::RawAsyncClientSharedPtr&& primary_async_client,
-                          Grpc::RawAsyncClientSharedPtr&& failover_async_client, Stats::Scope&,
-                          BackOffStrategyPtr&&,
-                          const envoy::config::core::v3::ApiConfigSource&) -> absl::Status {
-        EXPECT_NE(primary_async_client, nullptr);
-        EXPECT_EQ(failover_async_client, nullptr);
-        return absl::OkStatus();
-      }));
+  EXPECT_CALL(ads_mux, updateMuxSource(_, _, _, _, ProtoEq(new_ads_config), _))
+      .WillOnce(
+          Invoke([](Grpc::RawAsyncClientSharedPtr&& primary_async_client,
+                    Grpc::RawAsyncClientSharedPtr&& failover_async_client, Stats::Scope&,
+                    BackOffStrategyPtr&&, const envoy::config::core::v3::ApiConfigSource&,
+                    std::function<std::unique_ptr<Upstream::LoadStatsReporter>()>) -> absl::Status {
+            EXPECT_NE(primary_async_client, nullptr);
+            EXPECT_EQ(failover_async_client, nullptr);
+            return absl::OkStatus();
+          }));
   const auto res = xds_manager_impl_.setAdsConfigSource(new_ads_config);
-  EXPECT_TRUE(res.ok());
+  EXPECT_OK(res);
 }
 
 // Validates that ADS replacement with primary and failover sources works.
@@ -346,17 +347,18 @@ TEST_P(XdsManagerImplTest, AdsReplacementPrimaryAndFailover) {
                             new_ads_config);
 
   Grpc::RawAsyncClientSharedPtr failover_client;
-  EXPECT_CALL(ads_mux, updateMuxSource(_, _, _, _, ProtoEq(new_ads_config)))
-      .WillOnce(Invoke([](Grpc::RawAsyncClientSharedPtr&& primary_async_client,
-                          Grpc::RawAsyncClientSharedPtr&& failover_async_client, Stats::Scope&,
-                          BackOffStrategyPtr&&,
-                          const envoy::config::core::v3::ApiConfigSource&) -> absl::Status {
-        EXPECT_NE(primary_async_client, nullptr);
-        EXPECT_NE(failover_async_client, nullptr);
-        return absl::OkStatus();
-      }));
+  EXPECT_CALL(ads_mux, updateMuxSource(_, _, _, _, ProtoEq(new_ads_config), _))
+      .WillOnce(
+          Invoke([](Grpc::RawAsyncClientSharedPtr&& primary_async_client,
+                    Grpc::RawAsyncClientSharedPtr&& failover_async_client, Stats::Scope&,
+                    BackOffStrategyPtr&&, const envoy::config::core::v3::ApiConfigSource&,
+                    std::function<std::unique_ptr<Upstream::LoadStatsReporter>()>) -> absl::Status {
+            EXPECT_NE(primary_async_client, nullptr);
+            EXPECT_NE(failover_async_client, nullptr);
+            return absl::OkStatus();
+          }));
   const auto res = xds_manager_impl_.setAdsConfigSource(new_ads_config);
-  EXPECT_TRUE(res.ok());
+  EXPECT_OK(res);
 }
 
 // Validates that setAdsConfigSource validation failure is detected.
@@ -1519,9 +1521,7 @@ TEST_F(XdsManagerImplXdstpConfigSourcesTest, SubscribeSingleValidConfigSource) {
 
   absl::StatusOr<xds::core::v3::ResourceName> resource_urn_or_error =
       XdsResourceIdentifier::decodeUrn(resource_name);
-  ASSERT_TRUE(resource_urn_or_error.ok());
-  xds::core::v3::ResourceName resource_urn = resource_urn_or_error.value();
-
+  ASSERT_OK(resource_urn_or_error);
   NiceMock<MockAdsConfigSubscriptionFactory> config_sub_factory;
   Registry::InjectFactory<ConfigSubscriptionFactory> config_sub_registry(config_sub_factory);
   testing::NiceMock<MockSubscription>* mock_subscription =
@@ -1603,7 +1603,7 @@ TEST_F(XdsManagerImplXdstpConfigSourcesTest, MultipleConfigSourcesUseFirstConfig
 
   absl::StatusOr<xds::core::v3::ResourceName> resource_urn_or_error =
       XdsResourceIdentifier::decodeUrn(resource_name);
-  ASSERT_TRUE(resource_urn_or_error.ok());
+  ASSERT_OK(resource_urn_or_error);
 
   NiceMock<MockAdsConfigSubscriptionFactory> config_sub_factory;
   Registry::InjectFactory<ConfigSubscriptionFactory> config_sub_registry(config_sub_factory);
@@ -1688,7 +1688,7 @@ TEST_F(XdsManagerImplXdstpConfigSourcesTest, MultipleConfigSourcesUseSecondConfi
 
   absl::StatusOr<xds::core::v3::ResourceName> resource_urn_or_error =
       XdsResourceIdentifier::decodeUrn(resource_name);
-  ASSERT_TRUE(resource_urn_or_error.ok());
+  ASSERT_OK(resource_urn_or_error);
 
   NiceMock<MockAdsConfigSubscriptionFactory> config_sub_factory;
   Registry::InjectFactory<ConfigSubscriptionFactory> config_sub_registry(config_sub_factory);
@@ -1772,7 +1772,7 @@ TEST_F(XdsManagerImplXdstpConfigSourcesTest, MultipleConfigSourcesNonMatching) {
 
   absl::StatusOr<xds::core::v3::ResourceName> resource_urn_or_error =
       XdsResourceIdentifier::decodeUrn(resource_name);
-  ASSERT_TRUE(resource_urn_or_error.ok());
+  ASSERT_OK(resource_urn_or_error);
 
   NiceMock<MockAdsConfigSubscriptionFactory> config_sub_factory;
   Registry::InjectFactory<ConfigSubscriptionFactory> config_sub_registry(config_sub_factory);
@@ -1839,7 +1839,7 @@ TEST_F(XdsManagerImplXdstpConfigSourcesTest, DefaultSourceUsedWhenConfigSourcesI
 
   absl::StatusOr<xds::core::v3::ResourceName> resource_urn_or_error =
       XdsResourceIdentifier::decodeUrn(resource_name);
-  ASSERT_TRUE(resource_urn_or_error.ok());
+  ASSERT_OK(resource_urn_or_error);
 
   NiceMock<MockAdsConfigSubscriptionFactory> config_sub_factory;
   Registry::InjectFactory<ConfigSubscriptionFactory> config_sub_registry(config_sub_factory);
@@ -1946,7 +1946,7 @@ TEST_F(XdsManagerImplXdstpConfigSourcesTest, DefaultSourceUsedWhenAllConfigSourc
 
   absl::StatusOr<xds::core::v3::ResourceName> resource_urn_or_error =
       XdsResourceIdentifier::decodeUrn(resource_name);
-  ASSERT_TRUE(resource_urn_or_error.ok());
+  ASSERT_OK(resource_urn_or_error);
 
   NiceMock<MockAdsConfigSubscriptionFactory> config_sub_factory;
   Registry::InjectFactory<ConfigSubscriptionFactory> config_sub_registry(config_sub_factory);

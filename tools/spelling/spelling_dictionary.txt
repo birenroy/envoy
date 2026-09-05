@@ -3,7 +3,9 @@
 # will accept title case (e.g. lyft matches Lyft). Prefixes (e.g., un-) or suffixes (e.g. -ing)
 # are allowed for any otherwise correctly spelled word.
 
+AI
 Allshard
+FCS
 FLUSHALL
 NUMPAT
 PUBSUB
@@ -17,6 +19,7 @@ flushdb
 itr
 STREQ
 htonl
+htons
 ABI
 ACK
 ACL
@@ -33,6 +36,7 @@ ARRAYSIZE
 ARN
 ASAN
 ASCII
+ASLR
 ASM
 ASN
 ASSERTed
@@ -62,7 +66,10 @@ BSON
 BPF
 Bdecoded
 Bencoded
+bzlmod
 CIO
+CBC
+cbc
 cbegin
 cend
 constness
@@ -73,6 +80,7 @@ DFP
 Dynatrace
 DOM
 DONTFRAG
+dotdot
 Gasd
 GiB
 IPTOS
@@ -82,6 +90,11 @@ Reserializer
 SION
 TRA
 Websockets
+reentrancy
+webtransport
+WEBTRANSPORT
+signalling
+signalled
 abc
 abcd
 abd
@@ -113,6 +126,7 @@ ETX
 FS
 FIXME
 decrypted
+decrypts
 gperf
 HEXDIG
 HEXDIGIT
@@ -123,6 +137,7 @@ Mensah
 NAK
 OWS
 Preconnecting
+CONNECT
 RCVBUF
 RTCP
 RTLD
@@ -188,6 +203,7 @@ ECDHE
 ECDS
 ECDSA
 ECONNREFUSED
+ECONNRESET
 EDESTRUCTION
 EDF
 EINVAL
@@ -207,12 +223,14 @@ EVP
 EWOULDBLOCK
 EXPECTs
 EXPR
+FAPI
 FAQ
 FASTOPEN
 FB
 FCDS
 FCM
 FFFF
+FFI
 FIN
 FIPS
 FIRSTHDR
@@ -256,11 +274,20 @@ Grabbit
 HC
 HCM
 HDS
+HEXPIRE
+HEXPIREAT
+HEXPIRETIME
 HMAC
 HOL
 HPACK
+HPERSIST
+HPEXPIRE
+HPEXPIREAT
+HPEXPIRETIME
+HPTTL
 HTAB
 HTML
+HTTL
 HTTP
 HTTPS
 HV
@@ -379,6 +406,7 @@ OCSP
 OD
 ODCDS
 OKP
+middleware
 middlewildcard
 monostate
 mpd
@@ -486,6 +514,7 @@ SIGINT
 SIGPIPE
 SIGSEGV
 SIGTERM
+SIGUSR
 SIMD
 SIO
 SSE
@@ -507,6 +536,7 @@ SS
 SSD
 SSE
 SSL
+SSRF
 STDSTRING
 STL
 STRLEN
@@ -571,6 +601,7 @@ WS
 WSA
 WSABUF
 WSS
+WUFFS
 Welford's
 Wi
 XDS
@@ -606,6 +637,7 @@ alls
 alphanumerics
 amongst
 anno
+Anthropic
 anonymization
 anonymizing
 anys
@@ -632,6 +664,9 @@ auths
 authz
 automata
 autoscale
+awaitable
+awaitables
+awaiter
 backend
 backends
 backgrounded
@@ -694,6 +729,7 @@ canonicalization
 canonicalize
 canonicalized
 canonicalizer
+canonicalizes
 canonicalizing
 cardinality
 casted
@@ -708,6 +744,7 @@ ci
 ciphersuite
 ciphersuites
 ciphertext
+ciphertexts
 circllhist
 clientcert
 cloneable
@@ -718,12 +755,14 @@ codebase
 codec
 codecs
 codepath
+codepoint
 codepoints
 codings
 combinatorial
 comparator
 compat
 completable
+computable
 cond
 condvar
 conf
@@ -734,6 +773,7 @@ conns
 const
 constexpr
 constructible
+cooldown
 copyable
 coroutine
 coroutines
@@ -753,10 +793,13 @@ ctad
 ctor
 ctrl
 customizations
+cutover
 darwin
+datacenter
 datadog
 datagram
 datagrams
+datapath
 de
 deallocate
 deallocated
@@ -823,6 +866,7 @@ dup
 durations
 dynamodb
 eg
+el
 emplace
 emplaced
 emscripten
@@ -832,6 +876,7 @@ encodings
 endian
 endianness
 endl
+enricher
 enqueue
 enqueued
 enqueues
@@ -921,7 +966,9 @@ gso
 gzip
 hackery
 hacky
+handoff
 handshaker
+hardcode
 hardcoded
 hardcodes
 hardcoding
@@ -938,6 +985,7 @@ healths
 healthz
 hermeticity
 highp
+hl
 hit
 hoc
 hostname
@@ -985,6 +1033,7 @@ iov
 iovcnt
 iovec
 iovecs
+iop
 ips
 iptables
 ish
@@ -1017,6 +1066,7 @@ ldd
 len
 lenenc
 lexically
+libbpf
 libc
 libevent
 libprotobuf
@@ -1126,6 +1176,7 @@ netmask
 netns
 NLB
 NLMSG
+nodiscard
 nonblocking
 noncopyable
 nonresponsive
@@ -1140,10 +1191,13 @@ nulled
 nullopt
 nullptr
 num
+numfields
 numkeys
 oauth
 observability
+observations
 ocagent
+offloadable
 offsetof
 oneof
 oneway
@@ -1151,6 +1205,7 @@ oob
 opcode
 openid
 openssl
+OpenAI
 opentracing
 optimizations
 optname
@@ -1291,6 +1346,7 @@ redispatch
 redistributions
 reentrant
 reentrants
+reentrantly
 refactor
 refactored
 refcount
@@ -1320,6 +1376,7 @@ reperform
 repicked
 replayable
 repo
+repos
 representable
 reproducibility
 requirepass
@@ -1358,6 +1415,7 @@ rtest
 rtrim
 rtt
 ruleset
+runfile
 runfiles
 runtime
 runtimes
@@ -1382,6 +1440,7 @@ serializable
 serializer
 serv
 servercert
+setarch
 setenv
 SETNAME
 setsockopt
@@ -1402,12 +1461,15 @@ sim
 sinked
 sint
 sizeof
+skippable
 smatch
 snapshotted
 sockaddr
 socketpair
 sockfd
+sockhash
 socklen
+sockmap
 sockopt
 sockopts
 somestring
@@ -1434,6 +1496,7 @@ str
 streambuf
 strerr
 strerror
+string
 stringbuf
 stringified
 stringify
@@ -1455,6 +1518,7 @@ submatch
 submessages
 subnet
 subnets
+subobject
 suboptimal
 subprocess
 subsecond
@@ -1473,6 +1537,7 @@ subzone
 sudo
 suf
 superclass
+superpod
 superroot
 superset
 supportability
@@ -1493,6 +1558,7 @@ tchars
 tcmalloc
 tcpdump
 teardown
+teardowns
 tempdir
 templated
 templating
@@ -1506,6 +1572,7 @@ testcase
 testcases
 testdata
 testee
+tgkill
 threadsafe
 thru
 timespan
@@ -1514,11 +1581,14 @@ timestamps
 timeval
 tmp
 tmpfile
+tmpfs
 token
 tokenize
 tokenized
+tokenizer
 tokenizes
 tokenizing
+tokio
 toolchain
 tos
 traceid
@@ -1545,6 +1615,7 @@ udpa
 uint
 un-
 unacked
+uname
 unary
 unconfigurable
 undef
@@ -1560,6 +1631,7 @@ unittest
 unix
 unref
 unreferenced
+dereferenced
 unzigzag
 upcasts
 upsert
@@ -1586,6 +1658,8 @@ variadic
 varint
 vec
 vectorize
+VBC
+VBD
 ver
 verifier
 verifiers
@@ -1614,6 +1688,7 @@ wildcard
 wildcards
 winsock
 workspace
+workspaces
 writev
 wrsq
 www
@@ -1627,6 +1702,9 @@ xid
 xmodem
 xxhash
 xxs
+xxxx
+xxxxxxxx
+xxxxxxxxxxxx
 xyz
 xyzwebservices
 yml
@@ -1665,6 +1743,7 @@ NXDOMAIN
 DNAT
 RSP
 EWMA
+fifo
 hotplug
 cgroup
 cgroupv1
@@ -1700,3 +1779,44 @@ nblk
 chr
 IWYU
 CRTP
+bitrate
+kbps
+dataset
+datasets
+smartptr
+JA3
+JA4
+AiProtocolManager
+modelling
+delegator
+CNSA
+KEM
+MSS
+SERVFAIL
+WR
+exceptionless
+freeaddrinfo
+fstat
+getrlimit
+linkat
+mkstemp
+muxes
+pread
+pwrite
+setns
+setrlimit
+preprocessor
+RDWR
+stringification
+RMW
+acq
+interleavings
+millis
+msgs
+CRYSTALS
+encapsulation
+Kyber
+MLKEM
+PQC
+quantum
+X25519MLKEM768

@@ -20,7 +20,7 @@ namespace Stats {
  */
 class MetricHelper {
 public:
-  MetricHelper(StatName name, StatName tag_extracted_name, const StatNameTagVector& stat_name_tags,
+  MetricHelper(StatName name, StatName tag_extracted_name, StatNameTagSpan stat_name_tags,
                SymbolTable& symbol_table);
   ~MetricHelper();
 
@@ -79,13 +79,13 @@ using StatSet = absl::flat_hash_set<StatType*, MetricHelper::Hash, MetricHelper:
  */
 template <class BaseClass> class MetricImpl : public BaseClass {
 public:
-  MetricImpl(StatName name, StatName tag_extracted_name, const StatNameTagVector& stat_name_tags,
+  MetricImpl(StatName name, StatName tag_extracted_name, StatNameTagSpan stat_name_tags,
              SymbolTable& symbol_table)
       : helper_(name, tag_extracted_name, stat_name_tags, symbol_table) {}
 
   // Empty construction of a MetricImpl; used for null stats.
   explicit MetricImpl(SymbolTable& symbol_table)
-      : MetricImpl(StatName(), StatName(), StatNameTagVector(), symbol_table) {}
+      : MetricImpl(StatName(), StatName(), {}, symbol_table) {}
 
   TagVector tags() const override { return helper_.tags(constSymbolTable()); }
   StatName statName() const override { return helper_.statName(); }
@@ -108,6 +108,11 @@ public:
   std::string tagExtractedName() const override {
     return constSymbolTable().toString(this->tagExtractedStatName());
   }
+
+  // Allocator-backed stats, the only ones transferred across hot restart, override these with a
+  // flag-backed implementation; other metrics do not track the flag.
+  bool noTagExtraction() const override { return false; }
+  void markAsNoTagExtraction() override {}
 
 protected:
   void clear(SymbolTable& symbol_table) { helper_.clear(symbol_table); }

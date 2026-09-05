@@ -2,6 +2,7 @@
 
 #include <cassert>
 #include <cstddef>
+#include <cstdint>
 #include <format>
 #include <functional>
 #include <map>
@@ -244,7 +245,8 @@ enum class AttributeID : uint32_t {
   XdsVirtualHostName,
   XdsVirtualHostMetadata,
   XdsUpstreamHostMetadata,
-  XdsFilterChainName
+  XdsFilterChainName,
+  HealthCheck
 };
 
 enum class LogLevel : uint32_t { Trace, Debug, Info, Warn, Error, Critical, Off };
@@ -327,6 +329,47 @@ public:
   virtual void onHttpStreamReset(uint64_t stream_id, HttpStreamResetReason reason) = 0;
 };
 
+enum class HttpFilterStreamResetReason : uint32_t {
+  LocalReset,
+  LocalRefusedStreamReset,
+};
+
+enum class SocketOptionState : uint32_t {
+  Prebind,
+  Bound,
+  Listening,
+};
+
+enum class SocketDirection : uint32_t { Upstream, Downstream };
+
+struct ClusterHostCounts {
+  uint64_t total;
+  uint64_t healthy;
+  uint64_t degraded;
+};
+
+class ChildSpan;
+
+class Span {
+public:
+  virtual ~Span() = default;
+
+  virtual void setTag(std::string_view key, std::string_view value) = 0;
+  virtual void setOperation(std::string_view operation) = 0;
+  virtual void log(std::string_view event) = 0;
+  virtual void setSampled(bool sampled) = 0;
+  virtual std::optional<std::string_view> getBaggage(std::string_view key) = 0;
+  virtual void setBaggage(std::string_view key, std::string_view value) = 0;
+  virtual std::optional<std::string_view> getTraceID() = 0;
+  virtual std::optional<std::string_view> getSpanID() = 0;
+  virtual std::unique_ptr<ChildSpan> spawnChild(std::string_view operation) = 0;
+};
+
+class ChildSpan : public Span {
+public:
+  virtual void finish() = 0;
+};
+
 class RouteSpecificConfig {
 public:
   virtual ~RouteSpecificConfig();
@@ -360,6 +403,12 @@ public:
 
 using MetricID = uint64_t;
 enum class MetricsResult : uint32_t { Success, NotFound, InvalidTags, Frozen };
+
+/**
+ * An opaque identifier for a generic secret subscribed to via
+ * HttpFilterConfigHandle::subscribeGenericSecret.
+ */
+using GenericSecretID = uint64_t;
 
 class HttpFilterHandle {
 public:
@@ -431,6 +480,24 @@ public:
   void setMetadata(std::string_view ns, std::string_view key, const char* value) {
     setMetadata(ns, key, std::string_view(value));
   }
+
+  /**
+   * Sets an entire metadata namespace from a serialized google.protobuf.Struct. The struct is
+   * merged into the namespace and existing entries with the same key are overwritten. A buffer
+   * that does not parse as a google.protobuf.Struct is a no-op.
+   * @param ns The metadata namespace.
+   * @param serialized_struct The serialized google.protobuf.Struct to set.
+   */
+  virtual void setMetadataStruct(std::string_view ns, std::string_view serialized_struct) = 0;
+
+  /**
+   * Sets an entire typed metadata namespace from a serialized google.protobuf.Any. The Any is
+   * merged into the namespace's typed_filter_metadata entry, preserving the exact message type via
+   * the Any type_url. A buffer that does not parse as a google.protobuf.Any is a no-op.
+   * @param ns The metadata namespace.
+   * @param serialized_any The serialized google.protobuf.Any to set.
+   */
+  virtual void setTypedMetadata(std::string_view ns, std::string_view serialized_any) = 0;
 
   /**
    * Appends a numeric value to the dynamic metadata list stored under the given namespace and key.
@@ -606,6 +673,103 @@ public:
    * route cache.
    */
   virtual void refreshRouteCluster() = 0;
+
+  /**
+   * Returns the current body buffering limit in bytes.
+   * @return The buffer limit in bytes.
+   */
+  virtual uint64_t getBufferLimit() = 0;
+
+  /**
+   * Sets the current body buffering limit in bytes.
+   * @param limit The desired buffer limit in bytes.
+   */
+  virtual void setBufferLimit(uint64_t limit) = 0;
+
+  /**
+   * Retrieves the serialized typed filter state value of the stream.
+   * @param key The filter state key.
+   * @return The typed filter state value if found, otherwise empty.
+   */
+  virtual std::optional<std::string_view> getFilterStateTyped(std::string_view key) = 0;
+
+  /**
+   * Sets a typed filter state value of the stream.
+   * @param key The filter state key.
+   * @param value The serialized typed value.
+   * @return true if the value was stored successfully.
+   */
+  virtual bool setFilterStateTyped(std::string_view key, std::string_view value) = 0;
+
+  /**
+   * Returns the worker index assigned to the current filter instance.
+   */
+  virtual uint32_t getWorkerIndex() = 0;
+
+  /**
+   * Sets an integer socket option on the upstream or downstream connection.
+   */
+  virtual bool setSocketOptionInt(int64_t level, int64_t name, SocketOptionState state,
+                                  SocketDirection direction, int64_t value) = 0;
+
+  /**
+   * Sets a bytes socket option on the upstream or downstream connection.
+   */
+  virtual bool setSocketOptionBytes(int64_t level, int64_t name, SocketOptionState state,
+                                    SocketDirection direction, std::string_view value) = 0;
+
+  /**
+   * Retrieves an integer socket option from the upstream or downstream connection.
+   */
+  virtual std::optional<int64_t> getSocketOptionInt(int64_t level, int64_t name,
+                                                    SocketOptionState state,
+                                                    SocketDirection direction) = 0;
+
+  /**
+   * Retrieves a bytes socket option from the upstream or downstream connection.
+   */
+  virtual std::optional<std::string_view> getSocketOptionBytes(int64_t level, int64_t name,
+                                                               SocketOptionState state,
+                                                               SocketDirection direction) = 0;
+
+  /**
+   * Retrieves the active tracing span for the current stream.
+   */
+  virtual std::unique_ptr<Span> getActiveSpan() = 0;
+
+  /**
+   * Retrieves the selected upstream cluster name for the current stream.
+   */
+  virtual std::optional<std::string_view> getClusterName() = 0;
+
+  /**
+   * Retrieves host counts for the selected upstream cluster at the given priority.
+   */
+  virtual std::optional<ClusterHostCounts> getClusterHostCounts(uint32_t priority) = 0;
+
+  /**
+   * Sets an upstream override host for the selected cluster.
+   */
+  virtual bool setUpstreamOverrideHost(std::string_view host, bool strict) = 0;
+
+  /**
+   * Resets the current downstream stream with the given reason and details string.
+   */
+  virtual void resetStream(HttpFilterStreamResetReason reason, std::string_view details) = 0;
+
+  /**
+   * Sends GOAWAY and closes the downstream connection.
+   */
+  virtual void sendGoAwayAndClose(bool graceful) = 0;
+
+  /**
+   * Recreates the current stream, optionally with replacement headers. Returns false if the
+   * recreation could not be initiated, for example when the request body has not been fully
+   * received. On success the filter chain is destroyed before the current event hook returns and
+   * the filter should stop iteration. The filter itself stays valid until the hook returns, and
+   * the callbacks it makes after the teardown are safe and do not affect the recreated stream.
+   */
+  virtual bool recreateStream(std::span<const HeaderView> headers = {}) = 0;
 
   /**
    * Returns reference to request headers.
@@ -807,6 +971,22 @@ public:
                                               std::span<const BufferView> tags_values = {}) = 0;
 
   /**
+   * Returns the current value of a generic secret subscribed to by the filter config via
+   * HttpFilterConfigHandle::subscribeGenericSecret. An empty value means the secret has been
+   * subscribed to but not yet delivered by the SDS server, which is distinct from an absent
+   * optional.
+   *
+   * The returned view aliases Envoy memory and must not be retained across events: a secret
+   * rotation replaces the value in between events on this worker thread. Copy it if it needs to
+   * outlive the current callback.
+   *
+   * @param id The secret ID returned by subscribeGenericSecret.
+   * @return The current value, or std::nullopt if the id does not correspond to a subscribed
+   * secret.
+   */
+  virtual std::optional<std::string_view> getGenericSecret(GenericSecretID id) = 0;
+
+  /**
    * Checks if logging is enabled for the given log level.
    * @param level The log level to check.
    * @return True if logging is enabled, false otherwise.
@@ -851,6 +1031,102 @@ public:
    */
   virtual std::pair<MetricID, MetricsResult>
   defineCounter(std::string_view name, std::span<const BufferView> tags_keys = {}) = 0;
+
+  /**
+   * Records a histogram value with optional tags. Unlike HttpFilterHandle::recordHistogramValue,
+   * this does not require a per-stream filter and can be called outside of the request lifecycle,
+   * for example from a scheduled background task.
+   * @param id The metric ID.
+   * @param value The value to record.
+   * @param tags_values Optional span of tag values.
+   * @return MetricsResult indicating success or failure.
+   */
+  virtual MetricsResult recordHistogramValue(MetricID id, uint64_t value,
+                                             std::span<const BufferView> tags_values = {}) = 0;
+
+  /**
+   * Sets a gauge value with optional tags. Unlike HttpFilterHandle::setGaugeValue, this does not
+   * require a per-stream filter and can be called outside of the request lifecycle, for example
+   * from a scheduled background task.
+   * @param id The metric ID.
+   * @param value The gauge value.
+   * @param tags_values Optional span of tag values.
+   * @return MetricsResult indicating success or failure.
+   */
+  virtual MetricsResult setGaugeValue(MetricID id, uint64_t value,
+                                      std::span<const BufferView> tags_values = {}) = 0;
+
+  /**
+   * Increments a gauge value with optional tags. Unlike HttpFilterHandle::incrementGaugeValue, this
+   * does not require a per-stream filter and can be called outside of the request lifecycle, for
+   * example from a scheduled background task.
+   * @param id The metric ID.
+   * @param value The increment amount.
+   * @param tags_values Optional span of tag values.
+   * @return MetricsResult indicating success or failure.
+   */
+  virtual MetricsResult incrementGaugeValue(MetricID id, uint64_t value,
+                                            std::span<const BufferView> tags_values = {}) = 0;
+
+  /**
+   * Decrements a gauge value with optional tags. Unlike HttpFilterHandle::decrementGaugeValue, this
+   * does not require a per-stream filter and can be called outside of the request lifecycle, for
+   * example from a scheduled background task.
+   * @param id The metric ID.
+   * @param value The decrement amount.
+   * @param tags_values Optional span of tag values.
+   * @return MetricsResult indicating success or failure.
+   */
+  virtual MetricsResult decrementGaugeValue(MetricID id, uint64_t value,
+                                            std::span<const BufferView> tags_values = {}) = 0;
+
+  /**
+   * Increments a counter value with optional tags. Unlike HttpFilterHandle::incrementCounterValue,
+   * this does not require a per-stream filter and can be called outside of the request lifecycle,
+   * for example from a scheduled background task.
+   * @param id The metric ID.
+   * @param value The increment amount.
+   * @param tags_values Optional span of tag values.
+   * @return MetricsResult indicating success or failure.
+   */
+  virtual MetricsResult incrementCounterValue(MetricID id, uint64_t value,
+                                              std::span<const BufferView> tags_values = {}) = 0;
+
+  /**
+   * Subscribes to a generic secret so that its value can later be read via getGenericSecret, either
+   * here or on HttpFilterHandle.
+   *
+   * This can only be called while the filter config is being created, i.e. from
+   * HttpFilterConfigFactory::onConfigNew.
+   *
+   * @param name The name of the secret: for a static secret the name in the bootstrap
+   * configuration, and for a dynamic secret the resource name requested from the SDS server.
+   * @param sds_config_source The JSON serialized ``envoy.config.core.v3.ConfigSource`` describing
+   * where to fetch the secret from, so that the value is updated whenever the SDS server pushes a
+   * new version. Pass an empty string to look the name up among the statically configured secrets
+   * instead.
+   * @return The secret ID, or std::nullopt if the secret cannot be subscribed to, for example when
+   * the static secret does not exist or sds_config_source is not a valid ConfigSource.
+   */
+  virtual std::optional<GenericSecretID>
+  subscribeGenericSecret(std::string_view name, std::string_view sds_config_source = {}) = 0;
+
+  /**
+   * Returns the current value of a previously subscribed generic secret. An empty value means the
+   * secret has been subscribed to but not yet delivered by the SDS server, which is distinct from
+   * an absent optional.
+   *
+   * Unlike HttpFilterHandle::getGenericSecret, this does not require a per-stream filter and can be
+   * called outside of the request lifecycle, for example from a scheduled background task.
+   *
+   * The returned view aliases Envoy memory and must not be retained across events. Copy it if it
+   * needs to outlive the current callback.
+   *
+   * @param id The secret ID returned by subscribeGenericSecret.
+   * @return The current value, or std::nullopt if the id does not correspond to a subscribed
+   * secret.
+   */
+  virtual std::optional<std::string_view> getGenericSecret(GenericSecretID id) = 0;
 
   /**
    * Checks if logging is enabled for the given log level.
@@ -950,6 +1226,11 @@ enum class TrailersStatus : uint32_t {
   Stop = 1,
 };
 
+enum class LocalReplyStatus : uint32_t {
+  Continue = 0,
+  ContinueAndResetStream = 1,
+};
+
 class HttpFilter {
 public:
   virtual ~HttpFilter();
@@ -1013,6 +1294,18 @@ public:
    * any per-stream resources.
    */
   virtual void onDestroy() = 0;
+
+  /**
+   * Called when a local reply is being sent on the stream.
+   * @param response_code The HTTP response code for the local reply.
+   * @param details The response code details string.
+   * @param reset_imminent Whether the stream will be reset instead of sending the local reply.
+   * @return LocalReplyStatus indicating how local reply processing should continue.
+   */
+  virtual LocalReplyStatus onLocalReply(uint32_t response_code, std::string_view details,
+                                        bool reset_imminent) {
+    return LocalReplyStatus::Continue;
+  }
 };
 
 class HttpFilterFactory {

@@ -5,8 +5,8 @@
 #include "source/server/hot_restarting_child.h"
 #include "source/server/hot_restarting_parent.h"
 
+#include "test/mocks/api/mocks.h"
 #include "test/mocks/network/mocks.h"
-#include "test/mocks/server/instance.h"
 #include "test/mocks/server/listener_manager.h"
 #include "test/server/hot_restart_udp_forwarding_test_helper.h"
 #include "test/server/utility.h"
@@ -172,6 +172,15 @@ TEST_F(HotRestartingChildTest, ParentDrainedCallbacksAreCalledImmediatelyWhenAlr
                                                        callback1.AsStdFunction());
   hot_restarting_child_->registerParentDrainedCallback(test_listener_addr2,
                                                        callback2.AsStdFunction());
+}
+
+TEST_F(HotRestartingChildTest, ParentStopAcceptingLatchesOnDrainRequest) {
+  // With a parent (restart_epoch != 0), the child has not yet asked it to stop accepting.
+  EXPECT_FALSE(hot_restarting_child_->parentStopAcceptingRequested());
+  // drainParentListeners() sends the (fire-and-forget) drain-listeners request; expect one send.
+  fake_parent_->expectParentTerminateMessages();
+  hot_restarting_child_->drainParentListeners();
+  EXPECT_TRUE(hot_restarting_child_->parentStopAcceptingRequested());
 }
 
 TEST_F(HotRestartingChildTest, LogsErrorOnReplyMessageInUdpStream) {

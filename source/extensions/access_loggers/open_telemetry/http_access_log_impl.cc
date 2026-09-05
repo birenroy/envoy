@@ -175,7 +175,7 @@ HttpAccessLoggerCacheImpl::getOrCreateApplicator(
   ASSERT_IS_MAIN_OR_TEST_THREAD();
   const std::size_t config_hash = MessageUtil::hash(http_service);
 
-  absl::MutexLock lock(&applicator_mutex_);
+  absl::MutexLock lock(applicator_mutex_);
 
   const auto it = applicators_.find(config_hash);
   if (it != applicators_.end()) {
@@ -196,7 +196,7 @@ HttpAccessLoggerCacheImpl::getOrCreateApplicator(
       headers_applicator.release(),
       [self, config_hash](const Http::HttpServiceHeadersApplicator* ptr) {
         {
-          absl::MutexLock lock(&self->applicator_mutex_);
+          absl::MutexLock lock(self->applicator_mutex_);
           const auto it = self->applicators_.find(config_hash);
           // Check for expired in case a new entry was added at nearly the same time because the
           // check for an existing entry failed to `lock()`.
@@ -222,7 +222,7 @@ HttpAccessLog::HttpAccessLog(
     : Common::ImplBase(std::move(filter)), tls_slot_(server_context.threadLocal().allocateSlot()),
       access_logger_cache_(std::move(access_logger_cache)), http_service_(config.http_service()),
       filter_state_objects_to_log_(getFilterStateObjectsToLog(config)),
-      custom_tags_(getCustomTags(config)) {
+      custom_tags_(getCustomTags(config, commands)) {
 
   // Get or create the headers applicator on the main thread. This is required because
   // DataSourceProvider (used by FILE_CONTENT formatter) allocates TLS slots,

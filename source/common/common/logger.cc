@@ -7,8 +7,11 @@
 #include <string>
 #include <vector>
 
+#include "envoy/common/logger.h"
+
 #include "source/common/common/json_escape_string.h"
 #include "source/common/common/lock_guard.h"
+#include "source/common/version/version_string.h"
 
 #include "absl/strings/ascii.h"
 #include "absl/strings/escaping.h"
@@ -174,7 +177,7 @@ void Context::changeAllLogLevels(spdlog::level::level_enum level) {
   } else {
     // Level setting with Fine-Grain Logger.
     FINE_GRAIN_LOG(
-        info,
+        info, "",
         "change all log levels and default verbosity level for fine grain loggers: level='{}'",
         spdlog::level::level_string_views[level]);
     getFineGrainLogContext().updateVerbosityDefaultLevel(level);
@@ -321,6 +324,10 @@ void setLogFormatForLogger(spdlog::logger& logger, const std::string& log_format
           CustomFlagFormatter::ExtractedMessage::Placeholder)
       .set_pattern(log_format);
 
+  formatter
+      ->add_flag<CustomFlagFormatter::EnvoyVersion>(CustomFlagFormatter::EnvoyVersion::Placeholder)
+      .set_pattern(log_format);
+
   logger.set_formatter(std::move(formatter));
 }
 
@@ -418,6 +425,12 @@ void ExtractedMessage::format(const spdlog::details::log_msg& msg, const std::tm
   auto original_message =
       absl::string_view(payload.data() + tags_end_pos, payload.size() - tags_end_pos);
   Envoy::Logger::Utility::escapeMessageJsonString(original_message, dest);
+}
+
+void EnvoyVersion::format(const spdlog::details::log_msg&, const std::tm&,
+                          spdlog::memory_buf_t& dest) {
+  const std::string& version = envoyVersionString();
+  dest.append(version.data(), version.data() + version.size());
 }
 
 } // namespace CustomFlagFormatter

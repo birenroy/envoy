@@ -25,7 +25,6 @@ filegroup(
             "root/configuration/listeners/network_filters/_include/geoip-network-filter.yaml",
             "root/configuration/http/http_filters/_include/http-cache-configuration-fs.yaml",
             "root/configuration/http/http_filters/_include/http-cache-v2-configuration-fs.yaml",
-            "root/configuration/other_features/_include/dlb.yaml",
             "root/configuration/other_features/_include/hyperscan_matcher.yaml",
             "root/configuration/other_features/_include/hyperscan_matcher_multiple.yaml",
             "root/configuration/other_features/_include/hyperscan_regex_engine.yaml",
@@ -35,6 +34,7 @@ filegroup(
             "root/configuration/listeners/network_filters/_include/generic_proxy_filter.yaml",
             "root/configuration/overview/_include/xds_api/oauth-sds-example.yaml",
             "root/configuration/security/_include/sds-source-example.yaml",
+            "root/configuration/http/http_filters/_include/ip-tagging-filter.yaml",
         ],
     ) + select({
         "@envoy//bazel:windows_x86_64": [],
@@ -157,6 +157,7 @@ pkg_files(
     name = "sphinx_root",
     srcs = glob([
         "root/**/*.css",
+        "root/**/*.html",
         "root/**/*.ico",
         "root/**/*.jpeg",
         "root/**/*.jpg",
@@ -192,7 +193,7 @@ genrule(
         "//tools:generate_version_histories",
         "@envoy//:VERSION.txt",
         "@envoy//changelogs",
-        "@envoy//changelogs:sections.yaml",
+        "@envoy//changelogs:changelogs.yaml",
     ],
 )
 

@@ -76,7 +76,6 @@ public:
     stream_info_.filter_state_ = std::make_shared<StreamInfo::FilterStateImpl>(
         StreamInfo::FilterState::LifeSpan::Connection);
     stream_info_.filter_state_->setData(kConnectionExecutionContextFilterStateName, context_,
-                                        StreamInfo::FilterState::StateType::ReadOnly,
                                         StreamInfo::FilterState::LifeSpan::Connection);
   }
 
@@ -155,7 +154,9 @@ TEST_F(ExecutionContextTest, InScopeTrackerScopeState) {
   EXPECT_EQ(context_->activationGenerations(), 1);
 
   setWithoutContext();
-  { ScopeTrackerScopeState scope(&tracked_object_, *dispatcher); }
+  {
+    ScopeTrackerScopeState scope(&tracked_object_, *dispatcher);
+  }
 }
 
 TEST_F(ExecutionContextTest, NoopScope) {

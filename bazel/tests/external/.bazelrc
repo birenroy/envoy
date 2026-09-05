@@ -13,20 +13,24 @@ build --color=yes
 fetch --color=yes
 run --color=yes
 
-common --enable_workspace
-common --noenable_bzlmod
+common --registry=https://bcr.bazel.build/
+common --registry=https://raw.githubusercontent.com/envoyproxy/bazel-registry/7b38d27d192670d0ec16ef9309d875387c781de9
+common --noincompatible_disallow_empty_glob
 
 build --workspace_status_command="bash get_workspace_status"
 build --incompatible_strict_action_env
 build --action_env=SPHINX_RUNNER_ARGS
 build --copt=-Wno-deprecated-declarations
-build --cxxopt=-std=c++17 --host_cxxopt=-std=c++17
+build --cxxopt=-std=c++20 --host_cxxopt=-std=c++20
 build --action_env=BUILD_DOCS_SHA
 build --jobs=HOST_CPUS*.8
 build --verbose_failures
 
 common --@rules_python//python/config_settings:bootstrap_impl=script
 build --incompatible_default_to_explicit_init_py
+
+common --@protobuf//bazel/flags:prefer_prebuilt_protoc=true
+common --incompatible_enable_proto_toolchain_resolution
 
 
 #############################################################################
@@ -97,6 +101,11 @@ common:engflow-common --credential_helper=*.engflow.com=%workspace%/engflow-baze
 common:engflow-common --grpc_keepalive_time=60s
 common:engflow-common --grpc_keepalive_timeout=30s
 common:engflow-common --remote_cache_compression
+# Recover from transient gRPC failures (e.g. UNAVAILABLE: io exception) talking to engflow.
+common:engflow-common --remote_retries=10
+common:engflow-common --remote_retry_max_delay=60s
+# Recover when blobs are evicted from the CAS mid-build (common during patch releases).
+common:engflow-common --experimental_remote_cache_eviction_retries=5
 
 # this provides access to RBE+cache
 common:rbe --config=remote-cache
@@ -112,3 +121,4 @@ common:remote-exec --jobs=200
 common:remote-exec --define=engflow_rbe=true
 
 try-import %workspace%/repo.bazelrc
+try-import %workspace%/user.bazelrc

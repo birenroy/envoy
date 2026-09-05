@@ -21,13 +21,16 @@
 #include "test/mocks/network/mocks.h"
 #include "test/mocks/server/server_factory_context.h"
 #include "test/test_common/registry.h"
+#include "test/test_common/status_utility.h"
 #include "test/test_common/utility.h"
 
 #include "gmock/gmock.h"
 #include "gtest/gtest.h"
 #include "xds/type/matcher/v3/matcher.pb.h"
 
+using ::Envoy::StatusHelpers::IsOk;
 using testing::NiceMock;
+using ::testing::Not;
 
 namespace Envoy {
 namespace Upstream {
@@ -75,7 +78,7 @@ public:
   absl::StatusOr<Network::UpstreamTransportSocketFactoryPtr>
   createTransportSocketFactory(const Protobuf::Message& proto,
                                Server::Configuration::TransportSocketFactoryContext&) override {
-    const auto& node = dynamic_cast<const envoy::config::core::v3::Node&>(proto);
+    const auto& node = Envoy::Protobuf::DynamicCastMessage<envoy::config::core::v3::Node>(proto);
     std::string id = "default-foo";
     if (!node.id().empty()) {
       id = node.id();
@@ -513,7 +516,7 @@ transport_socket:
   auto result_or = TransportSocketMatcherImpl::create(matches, makeOptRefFromPtr(&matcher),
                                                       mock_factory_context_, mock_default_factory_,
                                                       *stats_scope_);
-  ASSERT_TRUE(result_or.ok()) << result_or.status();
+  ASSERT_OK(result_or);
   matcher_ = std::move(*result_or);
 
   auto& factory = matcher_->resolve(nullptr, nullptr).factory_;
@@ -539,7 +542,7 @@ transport_socket:
     auto created = TransportSocketMatcherImpl::create(matches, makeOptRefFromPtr(&matcher),
                                                       mock_factory_context_, mock_default_factory_,
                                                       *stats_scope_);
-    EXPECT_FALSE(created.ok());
+    EXPECT_THAT(created, Not(IsOk()));
     EXPECT_TRUE(absl::IsInvalidArgument(created.status())) << created.status();
   }
 
@@ -573,7 +576,7 @@ transport_socket:
     auto created = TransportSocketMatcherImpl::create(matches, makeOptRefFromPtr(&matcher),
                                                       mock_factory_context_, mock_default_factory_,
                                                       *stats_scope_);
-    EXPECT_FALSE(created.ok());
+    EXPECT_THAT(created, Not(IsOk()));
     EXPECT_TRUE(absl::IsInvalidArgument(created.status())) << created.status();
   }
 }
@@ -648,15 +651,14 @@ on_no_match:
     // Simulate a filter setting network namespace in downstream filter state.
     auto ns_object = std::make_shared<Router::StringAccessorImpl>("/run/netns/namespace-a");
     downstream_filter_state->setData(
-        "envoy.network.namespace", ns_object, StreamInfo::FilterState::StateType::ReadOnly,
-        StreamInfo::FilterState::LifeSpan::Connection,
+        "envoy.network.namespace", ns_object, StreamInfo::FilterState::LifeSpan::Connection,
         StreamInfo::StreamSharingMayImpactPooling::SharedWithUpstreamConnection);
 
     // Create TransportSocketOptions with the shared filter state objects.
     auto shared_objects = downstream_filter_state->objectsSharedWithUpstreamConnection();
     auto transport_socket_options = std::make_shared<Network::TransportSocketOptionsImpl>(
         "", std::vector<std::string>{}, std::vector<std::string>{}, std::vector<std::string>{},
-        absl::nullopt, std::move(shared_objects));
+        std::nullopt, std::move(shared_objects));
 
     // Resolve transport socket - should select namespace_a_socket.
     auto result = matcher_->resolve(nullptr, nullptr, transport_socket_options);
@@ -672,14 +674,13 @@ on_no_match:
 
     auto ns_object = std::make_shared<Router::StringAccessorImpl>("/run/netns/namespace-b");
     downstream_filter_state->setData(
-        "envoy.network.namespace", ns_object, StreamInfo::FilterState::StateType::ReadOnly,
-        StreamInfo::FilterState::LifeSpan::Connection,
+        "envoy.network.namespace", ns_object, StreamInfo::FilterState::LifeSpan::Connection,
         StreamInfo::StreamSharingMayImpactPooling::SharedWithUpstreamConnection);
 
     auto shared_objects = downstream_filter_state->objectsSharedWithUpstreamConnection();
     auto transport_socket_options = std::make_shared<Network::TransportSocketOptionsImpl>(
         "", std::vector<std::string>{}, std::vector<std::string>{}, std::vector<std::string>{},
-        absl::nullopt, std::move(shared_objects));
+        std::nullopt, std::move(shared_objects));
 
     auto result = matcher_->resolve(nullptr, nullptr, transport_socket_options);
     const auto& factory = dynamic_cast<const FakeTransportSocketFactory&>(result.factory_);
@@ -702,7 +703,7 @@ on_no_match:
     auto shared_objects = downstream_filter_state->objectsSharedWithUpstreamConnection();
     auto transport_socket_options = std::make_shared<Network::TransportSocketOptionsImpl>(
         "", std::vector<std::string>{}, std::vector<std::string>{}, std::vector<std::string>{},
-        absl::nullopt, std::move(shared_objects));
+        std::nullopt, std::move(shared_objects));
 
     auto result = matcher_->resolve(nullptr, nullptr, transport_socket_options);
     const auto& factory = dynamic_cast<const FakeTransportSocketFactory&>(result.factory_);

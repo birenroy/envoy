@@ -13,6 +13,7 @@
 #include "envoy/admin/v3/certs.pb.h"
 #include "envoy/common/exception.h"
 #include "envoy/common/platform.h"
+#include "envoy/singleton/manager.h"
 #include "envoy/ssl/ssl_socket_extended_info.h"
 #include "envoy/stats/scope.h"
 #include "envoy/type/matcher/v3/string.pb.h"
@@ -59,6 +60,50 @@ namespace Extensions {
 namespace TransportSockets {
 namespace Tls {
 
+SINGLETON_MANAGER_REGISTRATION(tls_builtin_stat_names);
+
+TlsBuiltinStatNames::TlsBuiltinStatNames(Stats::SymbolTable& symbol_table)
+    : stat_name_set_(symbol_table.makeSet("TransportSockets::Tls")),
+      unknown_ssl_cipher_(stat_name_set_->add("unknown_ssl_cipher")),
+      unknown_ssl_curve_(stat_name_set_->add("unknown_ssl_curve")),
+      unknown_ssl_algorithm_(stat_name_set_->add("unknown_ssl_algorithm")),
+      unknown_ssl_version_(stat_name_set_->add("unknown_ssl_version")),
+      ssl_ciphers_(stat_name_set_->add("ssl.ciphers")),
+      ssl_versions_(stat_name_set_->add("ssl.versions")),
+      ssl_curves_(stat_name_set_->add("ssl.curves")),
+      ssl_sigalgs_(stat_name_set_->add("ssl.sigalgs")) {
+  // Register stat names based on lists reported by BoringSSL. These are compile-time constant
+  // tables, so the resulting set is identical for every TLS context in the process.
+  std::vector<const char*> list(SSL_get_all_cipher_names(nullptr, 0));
+  SSL_get_all_cipher_names(list.data(), list.size());
+  stat_name_set_->rememberBuiltins(list);
+
+  list.resize(SSL_get_all_curve_names(nullptr, 0));
+  SSL_get_all_curve_names(list.data(), list.size());
+  stat_name_set_->rememberBuiltins(list);
+
+  list.resize(SSL_get_all_signature_algorithm_names(nullptr, 0));
+  SSL_get_all_signature_algorithm_names(list.data(), list.size());
+  stat_name_set_->rememberBuiltins(list);
+
+  list.resize(SSL_get_all_version_names(nullptr, 0));
+  SSL_get_all_version_names(list.data(), list.size());
+  stat_name_set_->rememberBuiltins(list);
+}
+
+namespace {
+// Returns the server-wide shared TLS builtin stat names, creating them on first use. The set is
+// owned by the singleton manager (per-server, hence tied to a single symbol table) and kept alive
+// by the returned shared_ptr held by each ContextImpl.
+std::shared_ptr<TlsBuiltinStatNames>
+getTlsBuiltinStatNames(Server::Configuration::CommonFactoryContext& factory_context) {
+  return factory_context.singletonManager().getTyped<TlsBuiltinStatNames>(
+      SINGLETON_MANAGER_REGISTERED_NAME(tls_builtin_stat_names), [&factory_context] {
+        return std::make_shared<TlsBuiltinStatNames>(factory_context.serverScope().symbolTable());
+      });
+}
+} // namespace
+
 int ContextImpl::sslExtendedSocketInfoIndex() {
   CONSTRUCT_ON_FIRST_USE(int, []() -> int {
     int ssl_context_index = SSL_get_ex_new_index(0, nullptr, nullptr, nullptr, nullptr);
@@ -74,16 +119,9 @@ ContextImpl::ContextImpl(
     Ssl::ContextAdditionalInitFunc additional_init, absl::Status& creation_status)
     : scope_(scope), stats_(generateSslStats(scope)), factory_context_(factory_context),
       tls_max_version_(config.maxProtocolVersion()),
-      stat_name_set_(scope.symbolTable().makeSet("TransportSockets::Tls")),
-      unknown_ssl_cipher_(stat_name_set_->add("unknown_ssl_cipher")),
-      unknown_ssl_curve_(stat_name_set_->add("unknown_ssl_curve")),
-      unknown_ssl_algorithm_(stat_name_set_->add("unknown_ssl_algorithm")),
-      unknown_ssl_version_(stat_name_set_->add("unknown_ssl_version")),
-      ssl_ciphers_(stat_name_set_->add("ssl.ciphers")),
-      ssl_versions_(stat_name_set_->add("ssl.versions")),
-      ssl_curves_(stat_name_set_->add("ssl.curves")),
-      ssl_sigalgs_(stat_name_set_->add("ssl.sigalgs")), capabilities_(config.capabilities()),
-      tls_keylog_local_(config.tlsKeyLogLocal()), tls_keylog_remote_(config.tlsKeyLogRemote()) {
+      builtin_stat_names_(getTlsBuiltinStatNames(factory_context)),
+      capabilities_(config.capabilities()), tls_keylog_local_(config.tlsKeyLogLocal()),
+      tls_keylog_remote_(config.tlsKeyLogRemote()) {
 
   auto cert_validator_name = getCertValidatorName(config.certificateValidationContext());
   auto cert_validator_factory =
@@ -324,31 +362,13 @@ ContextImpl::ContextImpl(
       }
 
       if (additional_init != nullptr) {
-        absl::Status init_status = additional_init(ctx, tls_certificate);
-        SET_AND_RETURN_IF_NOT_OK(creation_status, init_status);
+        SET_AND_RETURN_IF_NOT_OK(additional_init(ctx, tls_certificate), creation_status);
       }
     }
   }
 
   parsed_alpn_protocols_ = parseAlpnProtocols(config.alpnProtocols(), creation_status);
-  SET_AND_RETURN_IF_NOT_OK(creation_status, creation_status);
-
-  // Register stat names based on lists reported by BoringSSL.
-  std::vector<const char*> list(SSL_get_all_cipher_names(nullptr, 0));
-  SSL_get_all_cipher_names(list.data(), list.size());
-  stat_name_set_->rememberBuiltins(list);
-
-  list.resize(SSL_get_all_curve_names(nullptr, 0));
-  SSL_get_all_curve_names(list.data(), list.size());
-  stat_name_set_->rememberBuiltins(list);
-
-  list.resize(SSL_get_all_signature_algorithm_names(nullptr, 0));
-  SSL_get_all_signature_algorithm_names(list.data(), list.size());
-  stat_name_set_->rememberBuiltins(list);
-
-  list.resize(SSL_get_all_version_names(nullptr, 0));
-  SSL_get_all_version_names(list.data(), list.size());
-  stat_name_set_->rememberBuiltins(list);
+  RETURN_ONLY_IF_NOT_OK_REF(creation_status);
 
   // As late as possible, run the custom SSL_CTX configuration callback on each
   // SSL_CTX, if set.
@@ -379,15 +399,21 @@ ContextImpl::ContextImpl(
       if (!fips_mode) {
         ENVOY_LOG(warn, "FIPS conformance policy applied on a non-FIPS build");
       }
-      for (auto& tls_context : tls_contexts_) {
-        int rc = SSL_CTX_set_compliance_policy(tls_context.ssl_ctx_.get(),
-                                               ssl_compliance_policy_fips_202205);
-        if (rc != 1) {
-          creation_status = absl::InvalidArgumentError(
-              absl::StrCat("Failed to apply FIPS_202205 compliance policy: ",
-                           Utility::getLastCryptoError().value_or("")));
-          return;
-        }
+      creation_status = setCompliancePolicy(ssl_compliance_policy_fips_202205);
+      if (!creation_status.ok()) {
+        return;
+      }
+      break;
+    case ProtoPolicy::CNSA2_202603:
+      creation_status = setCompliancePolicy(ssl_compliance_policy_cnsa2_202603);
+      if (!creation_status.ok()) {
+        return;
+      }
+      break;
+    case ProtoPolicy::CNSA1_202603:
+      creation_status = setCompliancePolicy(ssl_compliance_policy_cnsa1_202603);
+      if (!creation_status.ok()) {
+        return;
       }
       break;
     default:
@@ -397,6 +423,18 @@ ContextImpl::ContextImpl(
   }
 }
 
+absl::Status ContextImpl::setCompliancePolicy(enum ssl_compliance_policy_t policy) {
+  for (auto& tls_context : tls_contexts_) {
+    int rc = SSL_CTX_set_compliance_policy(tls_context.ssl_ctx_.get(), policy);
+    if (rc != 1) {
+      return absl::InvalidArgumentError(absl::StrCat("Failed to apply compliance policy: ",
+                                                     Utility::getLastCryptoError().value_or("")));
+    }
+  }
+
+  return absl::OkStatus();
+}
+
 void ContextImpl::keylogCallback(const SSL* ssl, const char* line) {
   ASSERT(ssl != nullptr);
   auto callbacks =
@@ -404,14 +442,20 @@ void ContextImpl::keylogCallback(const SSL* ssl, const char* line) {
   auto ctx = static_cast<ContextImpl*>(SSL_CTX_get_app_data(SSL_get_SSL_CTX(ssl)));
   ASSERT(callbacks != nullptr);
   ASSERT(ctx != nullptr);
+  ctx->maybeWriteKeyLog(line, callbacks->connection().connectionInfoProvider().localAddress().get(),
+                        callbacks->connection().connectionInfoProvider().remoteAddress().get());
+}
 
-  if ((ctx->tls_keylog_local_.getIpListSize() == 0 ||
-       ctx->tls_keylog_local_.contains(
-           *(callbacks->connection().connectionInfoProvider().localAddress()))) &&
-      (ctx->tls_keylog_remote_.getIpListSize() == 0 ||
-       ctx->tls_keylog_remote_.contains(
-           *(callbacks->connection().connectionInfoProvider().remoteAddress())))) {
-    ctx->tls_keylog_file_->write(absl::StrCat(line, "\n"));
+void ContextImpl::maybeWriteKeyLog(const char* line, const Network::Address::Instance* local_addr,
+                                   const Network::Address::Instance* remote_addr) const {
+  if (tls_keylog_file_ == nullptr) {
+    return;
+  }
+  if ((tls_keylog_local_.getIpListSize() == 0 ||
+       (local_addr != nullptr && tls_keylog_local_.contains(*local_addr))) &&
+      (tls_keylog_remote_.getIpListSize() == 0 ||
+       (remote_addr != nullptr && tls_keylog_remote_.contains(*remote_addr)))) {
+    tls_keylog_file_->write(absl::StrCat(line, "\n"));
   }
 }
 
@@ -516,7 +560,7 @@ ValidationResults ContextImpl::customVerifyCertChain(
     stats_.fail_verify_error_.inc();
     ENVOY_LOG(debug, "verify cert failed: no cert chain");
     return {ValidationResults::ValidationStatus::Failed, Ssl::ClientValidationStatus::NotValidated,
-            SSL_AD_INTERNAL_ERROR, absl::nullopt};
+            SSL_AD_INTERNAL_ERROR, std::nullopt};
   }
   ASSERT(cert_validator_);
   const char* host_name = SSL_get_servername(ssl, TLSEXT_NAMETYPE_host_name);
@@ -540,7 +584,8 @@ ValidationResults ContextImpl::customVerifyCertChain(
 
 void ContextImpl::incCounter(const Stats::StatName name, absl::string_view value,
                              const Stats::StatName fallback) const {
-  const Stats::StatName value_stat_name = stat_name_set_->getBuiltin(value, fallback);
+  const Stats::StatName value_stat_name =
+      builtin_stat_names_->statNameSet().getBuiltin(value, fallback);
   ENVOY_BUG(value_stat_name != fallback,
             absl::StrCat("Unexpected ", scope_.symbolTable().toString(name), " value: ", value));
   Stats::Utility::counterFromElements(scope_, {name, value_stat_name}).inc();
@@ -553,30 +598,27 @@ void ContextImpl::logHandshake(SSL* ssl) const {
     stats_.session_reused_.inc();
   }
 
-  incCounter(ssl_ciphers_, SSL_get_cipher_name(ssl), unknown_ssl_cipher_);
-  incCounter(ssl_versions_, SSL_get_version(ssl), unknown_ssl_version_);
+  incCounter(builtin_stat_names_->ssl_ciphers_, SSL_get_cipher_name(ssl),
+             builtin_stat_names_->unknown_ssl_cipher_);
+  incCounter(builtin_stat_names_->ssl_versions_, SSL_get_version(ssl),
+             builtin_stat_names_->unknown_ssl_version_);
 
   const uint16_t curve_id = SSL_get_curve_id(ssl);
   if (curve_id) {
-    incCounter(ssl_curves_, SSL_get_curve_name(curve_id), unknown_ssl_curve_);
+    incCounter(builtin_stat_names_->ssl_curves_, SSL_get_curve_name(curve_id),
+               builtin_stat_names_->unknown_ssl_curve_);
   }
 
   const uint16_t sigalg_id = SSL_get_peer_signature_algorithm(ssl);
   if (sigalg_id) {
     const char* sigalg = SSL_get_signature_algorithm_name(sigalg_id, 1 /* include curve */);
-    incCounter(ssl_sigalgs_, sigalg, unknown_ssl_algorithm_);
+    incCounter(builtin_stat_names_->ssl_sigalgs_, sigalg,
+               builtin_stat_names_->unknown_ssl_algorithm_);
   }
 
   bssl::UniquePtr<X509> cert(SSL_get_peer_certificate(ssl));
   if (!cert.get()) {
     stats_.no_certificate_.inc();
-  }
-
-  // Increment the `was_key_usage_invalid_` stats to indicate the given cert would have triggered an
-  // error but is allowed because the enforcement that rsa key usage and tls usage need to be
-  // matched has been disabled.
-  if (SSL_was_key_usage_invalid(ssl)) {
-    stats_.was_key_usage_invalid_.inc();
   }
 }
 
@@ -593,24 +635,24 @@ std::vector<Ssl::PrivateKeyMethodProviderSharedPtr> ContextImpl::getPrivateKeyMe
   return providers;
 }
 
-absl::optional<uint32_t> ContextImpl::daysUntilFirstCertExpires() const {
-  absl::optional<uint32_t> daysUntilExpiration = cert_validator_->daysUntilFirstCertExpires();
+std::optional<uint32_t> ContextImpl::daysUntilFirstCertExpires() const {
+  std::optional<uint32_t> daysUntilExpiration = cert_validator_->daysUntilFirstCertExpires();
   if (!daysUntilExpiration.has_value()) {
-    return absl::nullopt;
+    return std::nullopt;
   }
   for (auto& ctx : tls_contexts_) {
-    const absl::optional<uint32_t> tmp =
+    const std::optional<uint32_t> tmp =
         Utility::getDaysUntilExpiration(ctx.cert_chain_.get(), factory_context_.timeSource());
     if (!tmp.has_value()) {
-      return absl::nullopt;
+      return std::nullopt;
     }
     daysUntilExpiration = std::min<uint32_t>(tmp.value(), daysUntilExpiration.value());
   }
   return daysUntilExpiration;
 }
 
-absl::optional<uint64_t> ContextImpl::secondsUntilFirstOcspResponseExpires() const {
-  absl::optional<uint64_t> secs_until_expiration;
+std::optional<uint64_t> ContextImpl::secondsUntilFirstOcspResponseExpires() const {
+  std::optional<uint64_t> secs_until_expiration;
   for (auto& ctx : tls_contexts_) {
     if (ctx.ocsp_response_) {
       uint64_t next_expiration = ctx.ocsp_response_->secondsUntilExpiration();
@@ -675,7 +717,7 @@ ValidationResults ContextImpl::customVerifyCertChainForQuic(
   if (SSL_CTX_get_verify_mode(ssl_ctx) == SSL_VERIFY_NONE) {
     // Skip validation if the TLS is configured SSL_VERIFY_NONE.
     return {ValidationResults::ValidationStatus::Successful,
-            Envoy::Ssl::ClientValidationStatus::NotValidated, absl::nullopt, absl::nullopt};
+            Envoy::Ssl::ClientValidationStatus::NotValidated, std::nullopt, std::nullopt};
   }
   ValidationResults result =
       cert_validator_->doVerifyCertChain(cert_chain, std::move(callback), transport_socket_options,

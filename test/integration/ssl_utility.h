@@ -72,7 +72,7 @@ struct ClientSslTransportOptions {
 
   bool alpn_{};
   bool client_ecdsa_cert_{false};
-  std::vector<std::string> cipher_suites_{};
+  std::vector<std::string> cipher_suites_;
   std::string san_;
   std::vector<std::string> sigalgs_;
   std::vector<std::string> curves_;
@@ -94,10 +94,12 @@ void initializeUpstreamTlsContextConfig(
 
 Network::UpstreamTransportSocketFactoryPtr
 createClientSslTransportSocketFactory(const ClientSslTransportOptions& options,
-                                      ContextManager& context_manager, Api::Api& api);
+                                      ContextManager& context_manager, Api::Api& api,
+                                      Stats::Scope* stats_scope = nullptr);
 
 Network::DownstreamTransportSocketFactoryPtr
-createUpstreamSslContext(ContextManager& context_manager, Api::Api& api, bool use_http3 = false);
+createUpstreamSslContext(ContextManager& context_manager, Api::Api& api, bool use_http3 = false,
+                         Stats::Scope* stats_scope = nullptr);
 
 Network::DownstreamTransportSocketFactoryPtr
 createFakeUpstreamSslContext(const std::string& upstream_cert_name, ContextManager& context_manager,

@@ -16,6 +16,7 @@
 #include "test/common/stats/stat_test_utility.h"
 #include "test/mocks/event/mocks.h"
 #include "test/mocks/protobuf/mocks.h"
+#include "test/mocks/runtime/mocks.h"
 #include "test/mocks/server/options.h"
 #include "test/mocks/thread_local/mocks.h"
 #include "test/test_common/registry.h"
@@ -51,7 +52,7 @@ public:
 
   void setPressure(double pressure) { response_ = pressure; }
 
-  void setError() { response_ = EnvoyException("fake_error"); }
+  void setError() { response_ = absl::InternalError("fake_error"); }
 
   void setUpdateAsync(bool new_update_async) {
     callbacks_.reset();
@@ -81,15 +82,15 @@ private:
       usage.resource_pressure_ = absl::get<double>(response_);
       dispatcher_.post([&, usage]() { callbacks.onSuccess(usage); });
     } else {
-      EnvoyException& error = absl::get<EnvoyException>(response_);
+      absl::Status& error = absl::get<absl::Status>(response_);
       dispatcher_.post([&, error]() { callbacks.onFailure(error); });
     }
   }
 
   Event::Dispatcher& dispatcher_;
-  absl::variant<double, EnvoyException> response_;
+  absl::variant<double, absl::Status> response_;
   bool update_async_ = false;
-  absl::optional<std::reference_wrapper<ResourceUpdateCallbacks>> callbacks_;
+  std::optional<std::reference_wrapper<ResourceUpdateCallbacks>> callbacks_;
 };
 
 class FakeProactiveResourceMonitor : public ProactiveResourceMonitor {
@@ -129,7 +130,7 @@ class FakeResourceMonitorFactory : public Server::Configuration::ResourceMonitor
 public:
   FakeResourceMonitorFactory(const std::string& name) : name_(name) {}
 
-  Server::ResourceMonitorPtr
+  absl::StatusOr<Server::ResourceMonitorPtr>
   createResourceMonitor(const Protobuf::Message&,
                         Server::Configuration::ResourceMonitorFactoryContext& context) override {
     auto monitor = std::make_unique<FakeResourceMonitor>(context.mainThreadDispatcher());
@@ -177,9 +178,10 @@ public:
                       ThreadLocal::SlotAllocator& slot_allocator,
                       const envoy::config::overload::v3::OverloadManager& config,
                       ProtobufMessage::ValidationVisitor& validation_visitor, Api::Api& api,
-                      const Server::MockOptions& options, absl::Status& creation_status)
+                      const Server::MockOptions& options, Runtime::Loader& runtime,
+                      absl::Status& creation_status)
       : OverloadManagerImpl(dispatcher, stats_scope, slot_allocator, config, validation_visitor,
-                            api, options, creation_status) {
+                            api, options, runtime, creation_status) {
     THROW_IF_NOT_OK_REF(creation_status);
     EXPECT_CALL(*this, createScaledRangeTimerManager)
         .Times(AnyNumber())
@@ -228,7 +230,7 @@ protected:
     absl::Status creation_status = absl::OkStatus();
     return std::make_unique<TestOverloadManager>(dispatcher_, *stats_.rootScope(), thread_local_,
                                                  parseConfig(config), validation_visitor_, *api_,
-                                                 options_, creation_status);
+                                                 options_, runtime_, creation_status);
   }
 
   FakeResourceMonitorFactory<Envoy::Protobuf::Struct> factory1_;
@@ -249,6 +251,7 @@ protected:
   NiceMock<ProtobufMessage::MockValidationVisitor> validation_visitor_;
   Api::ApiPtr api_;
   Server::MockOptions options_;
+  NiceMock<Runtime::MockLoader> runtime_;
 };
 
 constexpr char kRegularStateConfig[] = R"YAML(
@@ -1003,7 +1006,7 @@ TEST_F(OverloadManagerImplTest, ProactiveResourceAllocateAndDeallocateResourceTe
 
   auto monitor = manager->getThreadLocalOverloadState().getProactiveResourceMonitorForTest(
       Server::OverloadProactiveResourceName::GlobalDownstreamMaxConnections);
-  EXPECT_NE(absl::nullopt, monitor);
+  EXPECT_NE(std::nullopt, monitor);
   EXPECT_EQ(1, monitor->currentResourceUsage());
   resource_allocated = manager->getThreadLocalOverloadState().tryAllocateResource(
       Server::OverloadProactiveResourceName::GlobalDownstreamMaxConnections, 3);

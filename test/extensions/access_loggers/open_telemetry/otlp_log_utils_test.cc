@@ -16,8 +16,41 @@ namespace OpenTelemetry {
 namespace {
 
 using testing::NiceMock;
-using testing::Return;
 using testing::ReturnRef;
+
+// A minimal command parser that resolves the "%FAKE_COMMAND%" token to a fixed value, used to
+// verify that configured formatter command parsers are threaded into custom_tags creation.
+class FakeCommandParser : public Formatter::CommandParser {
+public:
+  class Provider : public Formatter::FormatterProvider {
+  public:
+    std::optional<std::string> format(const Formatter::Context&,
+                                      const StreamInfo::StreamInfo&) const override {
+      return "fake_value";
+    }
+    Protobuf::Value formatValue(const Formatter::Context&,
+                                const StreamInfo::StreamInfo&) const override {
+      return ValueUtil::stringValue("fake_value");
+    }
+    bool formatTo(std::string& sink, const Formatter::Context&,
+                  const StreamInfo::StreamInfo&) const override {
+      sink.append("fake_value");
+      return true;
+    }
+    void formatValueTo(Formatter::ValueSink& sink, const Formatter::Context&,
+                       const StreamInfo::StreamInfo&) const override {
+      sink.addString("fake_value");
+    }
+  };
+
+  absl::StatusOr<Formatter::FormatterProviderPtr>
+  parse(absl::string_view command, absl::string_view, std::optional<size_t>) const override {
+    if (command == "FAKE_COMMAND") {
+      return std::make_unique<Provider>();
+    }
+    return {nullptr};
+  }
+};
 
 const std::string kTestZone = "test_zone";
 const std::string kTestCluster = "test_cluster";
@@ -235,7 +268,7 @@ TEST(OtlpLogUtilsTest, AddFilterStateToAttributesFromDownstream) {
 
   stream_info.filter_state_->setData(
       "downstream_key", std::make_unique<Router::StringAccessorImpl>("downstream_value"),
-      StreamInfo::FilterState::StateType::ReadOnly, StreamInfo::FilterState::LifeSpan::FilterChain);
+      StreamInfo::FilterState::LifeSpan::FilterChain);
 
   std::vector<std::string> filter_state_objects = {"downstream_key"};
   addFilterStateToAttributes(stream_info, filter_state_objects, log_entry);
@@ -253,9 +286,9 @@ TEST(OtlpLogUtilsTest, AddFilterStateToAttributesFromUpstream) {
 
   auto upstream_filter_state =
       std::make_shared<StreamInfo::FilterStateImpl>(StreamInfo::FilterState::LifeSpan::FilterChain);
-  upstream_filter_state->setData(
-      "upstream_key", std::make_unique<Router::StringAccessorImpl>("upstream_value"),
-      StreamInfo::FilterState::StateType::ReadOnly, StreamInfo::FilterState::LifeSpan::FilterChain);
+  upstream_filter_state->setData("upstream_key",
+                                 std::make_unique<Router::StringAccessorImpl>("upstream_value"),
+                                 StreamInfo::FilterState::LifeSpan::FilterChain);
   stream_info.upstreamInfo()->setUpstreamFilterState(upstream_filter_state);
 
   std::vector<std::string> filter_state_objects = {"upstream_key"};
@@ -274,14 +307,14 @@ TEST(OtlpLogUtilsTest, AddFilterStateToAttributesDownstreamPrecedence) {
   // Add to downstream.
   stream_info.filter_state_->setData(
       "same_key", std::make_unique<Router::StringAccessorImpl>("downstream_wins"),
-      StreamInfo::FilterState::StateType::ReadOnly, StreamInfo::FilterState::LifeSpan::FilterChain);
+      StreamInfo::FilterState::LifeSpan::FilterChain);
 
   // Add to upstream.
   auto upstream_filter_state =
       std::make_shared<StreamInfo::FilterStateImpl>(StreamInfo::FilterState::LifeSpan::FilterChain);
-  upstream_filter_state->setData(
-      "same_key", std::make_unique<Router::StringAccessorImpl>("upstream_loses"),
-      StreamInfo::FilterState::StateType::ReadOnly, StreamInfo::FilterState::LifeSpan::FilterChain);
+  upstream_filter_state->setData("same_key",
+                                 std::make_unique<Router::StringAccessorImpl>("upstream_loses"),
+                                 StreamInfo::FilterState::LifeSpan::FilterChain);
   stream_info.upstreamInfo()->setUpstreamFilterState(upstream_filter_state);
 
   std::vector<std::string> filter_state_objects = {"same_key"};
@@ -341,6 +374,33 @@ TEST(OtlpLogUtilsTest, AddCustomTagsToAttributesWithLiteralTags) {
   auto* attr = expected.add_attributes();
   attr->set_key("literal_tag");
   attr->mutable_value()->set_string_value("literal_value");
+
+  EXPECT_TRUE(TestUtility::protoEqual(log_entry, expected));
+}
+
+// Verifies that configured formatter command parsers are used when creating custom tags, so a
+// custom tag whose value uses a formatter extension command resolves (#45453).
+TEST(OtlpLogUtilsTest, CustomTagsUseConfiguredFormatters) {
+  NiceMock<StreamInfo::MockStreamInfo> stream_info;
+  opentelemetry::proto::logs::v1::LogRecord log_entry;
+
+  envoy::extensions::access_loggers::open_telemetry::v3::OpenTelemetryAccessLogConfig config;
+  auto* tag = config.add_custom_tags();
+  tag->set_tag("fmt_tag");
+  tag->set_value("%FAKE_COMMAND%");
+
+  std::vector<Formatter::CommandParserPtr> commands;
+  commands.push_back(std::make_unique<FakeCommandParser>());
+  auto custom_tags = getCustomTags(config, commands);
+
+  Http::TestRequestHeaderMapImpl request_headers;
+  Formatter::Context context(&request_headers);
+  addCustomTagsToAttributes(custom_tags, context, stream_info, log_entry);
+
+  opentelemetry::proto::logs::v1::LogRecord expected;
+  auto* attr = expected.add_attributes();
+  attr->set_key("fmt_tag");
+  attr->mutable_value()->set_string_value("fake_value");
 
   EXPECT_TRUE(TestUtility::protoEqual(log_entry, expected));
 }

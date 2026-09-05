@@ -1,28 +1,13 @@
-load("@envoy_repo//:compiler.bzl", "LLVM_PATH", "USE_LOCAL_SYSROOT")
-load("@envoy_toolshed//repository:utils.bzl", "arch_alias")
-load("@toolchains_llvm//toolchain:rules.bzl", "llvm_toolchain")
+load("@envoy_repo//:compiler.bzl", "LLVM_LIB_DIR", "LLVM_PATH", "LLVM_VERSION_LOCAL", "USE_LIBSTDCPP")
 
-def envoy_toolchains():
-    native.register_toolchains("@envoy//bazel/rbe/toolchains/configs/linux/gcc/config:cc-toolchain")
-    arch_alias(
-        name = "clang_platform",
-        aliases = {
-            "amd64": "@envoy//bazel/platforms/rbe:linux_x64",
-            "aarch64": "@envoy//bazel/platforms/rbe:linux_arm64",
-        },
-    )
-    llvm_toolchain(
-        name = "llvm_toolchain",
-        llvm_version = "18.1.8",
-        # These libs are only included for cross-compile targets
-        cxx_cross_lib = {
-            "linux-aarch64": "@libcxx_libs_aarch64",
-            "linux-x86_64": "@libcxx_libs_x86_64",
-        },
-        cxx_standard = {"": "c++20"},
-        sysroot = {} if USE_LOCAL_SYSROOT else {
-            "linux-x86_64": "@sysroot_linux_amd64//:sysroot",
-            "linux-aarch64": "@sysroot_linux_arm64//:sysroot",
-        },
-        toolchain_roots = {"": LLVM_PATH} if LLVM_PATH else {},
-    )
+_LLVM_VERSION_HERMETIC = "22.1.8"
+LLVM_VERSION = LLVM_VERSION_LOCAL if LLVM_VERSION_LOCAL else _LLVM_VERSION_HERMETIC
+LLVM_MAJOR = LLVM_VERSION.split(".")[0]
+LLVM_MAJOR_MINOR = ".".join(LLVM_VERSION.split(".")[:2])
+
+_LLVM_LIB_PREFIX = LLVM_LIB_DIR if LLVM_PATH else "lib"
+LIBCLANG_CPP = "@llvm_toolchain_llvm//:" + _LLVM_LIB_PREFIX + "/libclang-cpp.so." + LLVM_MAJOR_MINOR
+
+# On distro-packaged LLVM, libclang-cpp.so dynamically links against libLLVM.so
+# (they're split). The hermetic LLVM bundles everything into libclang-cpp.so.
+LIBLLVM = ("@llvm_toolchain_llvm//:" + _LLVM_LIB_PREFIX + "/libLLVM.so." + LLVM_MAJOR_MINOR) if LLVM_PATH else None
