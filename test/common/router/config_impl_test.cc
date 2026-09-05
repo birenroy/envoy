@@ -12926,6 +12926,275 @@ virtual_hosts:
   EXPECT_EQ(334U, route->requestBodyBufferLimit());
 }
 
+TEST_F(RouteMatcherTest, DeferredVirtualHostCreationDisabled) {
+  TestScopedRuntime scoped_runtime;
+  scoped_runtime.mergeValues(
+      {{"envoy.reloadable_features.deferred_virtual_host_creation", "false"}});
+
+  const std::string yaml = R"EOF(
+virtual_hosts:
+- name: vhost_exact
+  domains: ["exact.example.com"]
+  routes:
+  - match: { prefix: "/exact" }
+    route: { cluster: "cluster_exact" }
+- name: vhost_wildcard
+  domains: ["*.wildcard.com"]
+  routes:
+  - match: { prefix: "/wildcard" }
+    route: { cluster: "cluster_wildcard" }
+)EOF";
+
+  factory_context_.cluster_manager_.initializeClusters({"cluster_exact", "cluster_wildcard"}, {});
+  TestConfigImpl config(parseRouteConfigurationFromYaml(yaml), factory_context_, true,
+                        creation_status_);
+  EXPECT_OK(creation_status_);
+
+  // Match exact domain
+  Http::TestRequestHeaderMapImpl headers_exact = genHeaders("exact.example.com", "/exact", "GET");
+  const auto route_exact = config.route(headers_exact, 0);
+  ASSERT_NE(nullptr, route_exact);
+  EXPECT_EQ("cluster_exact", route_exact->routeEntry()->clusterName());
+  EXPECT_EQ("vhost_exact", route_exact->virtualHost().name());
+
+  // Match wildcard domain
+  Http::TestRequestHeaderMapImpl headers_wildcard =
+      genHeaders("foo.wildcard.com", "/wildcard", "GET");
+  const auto route_wildcard = config.route(headers_wildcard, 0);
+  ASSERT_NE(nullptr, route_wildcard);
+  EXPECT_EQ("cluster_wildcard", route_wildcard->routeEntry()->clusterName());
+  EXPECT_EQ("vhost_wildcard", route_wildcard->virtualHost().name());
+}
+
+TEST_F(RouteMatcherTest, DeferredVirtualHostCreationEnabled) {
+  TestScopedRuntime scoped_runtime;
+  scoped_runtime.mergeValues(
+      {{"envoy.reloadable_features.deferred_virtual_host_creation", "true"}});
+
+  const std::string yaml = R"EOF(
+virtual_hosts:
+- name: vhost1
+  domains: ["app1.example.com"]
+  routes:
+  - match: { prefix: "/" }
+    route: { cluster: "cluster1" }
+- name: vhost2
+  domains: ["app2.example.com"]
+  routes:
+  - match: { prefix: "/" }
+    route: { cluster: "cluster2" }
+)EOF";
+
+  factory_context_.cluster_manager_.initializeClusters({"cluster1", "cluster2"}, {});
+  TestConfigImpl config(parseRouteConfigurationFromYaml(yaml), factory_context_, true,
+                        creation_status_);
+  EXPECT_OK(creation_status_);
+
+  // Initial lookup triggers lazy compilation and CAS publication
+  Http::TestRequestHeaderMapImpl headers1 = genHeaders("app1.example.com", "/foo", "GET");
+  const auto route1_first = config.route(headers1, 0);
+  ASSERT_NE(nullptr, route1_first);
+  EXPECT_EQ("cluster1", route1_first->routeEntry()->clusterName());
+  EXPECT_EQ("vhost1", route1_first->virtualHost().name());
+
+  // Subsequent lookup hits the cached active_vhost_ pointer
+  const auto route1_second = config.route(headers1, 0);
+  ASSERT_NE(nullptr, route1_second);
+  EXPECT_EQ(&route1_first->virtualHost(), &route1_second->virtualHost());
+
+  // App2 on-demand inflation
+  Http::TestRequestHeaderMapImpl headers2 = genHeaders("app2.example.com", "/bar", "GET");
+  const auto route2 = config.route(headers2, 0);
+  ASSERT_NE(nullptr, route2);
+  EXPECT_EQ("cluster2", route2->routeEntry()->clusterName());
+  EXPECT_EQ("vhost2", route2->virtualHost().name());
+}
+
+TEST_F(RouteMatcherTest, DeferredVirtualHostWildcardPrecedence) {
+  TestScopedRuntime scoped_runtime;
+  scoped_runtime.mergeValues(
+      {{"envoy.reloadable_features.deferred_virtual_host_creation", "true"}});
+
+  const std::string yaml = R"EOF(
+virtual_hosts:
+- name: vhost_default
+  domains: ["*"]
+  routes:
+  - match: { prefix: "/" }
+    route: { cluster: "cluster_default" }
+- name: vhost_short_prefix
+  domains: ["service.*"]
+  routes:
+  - match: { prefix: "/" }
+    route: { cluster: "cluster_short_prefix" }
+- name: vhost_long_prefix
+  domains: ["service.sub.*"]
+  routes:
+  - match: { prefix: "/" }
+    route: { cluster: "cluster_long_prefix" }
+- name: vhost_short_suffix
+  domains: ["*.example.com"]
+  routes:
+  - match: { prefix: "/" }
+    route: { cluster: "cluster_short_suffix" }
+- name: vhost_long_suffix
+  domains: ["*.sub.example.com"]
+  routes:
+  - match: { prefix: "/" }
+    route: { cluster: "cluster_long_suffix" }
+- name: vhost_exact
+  domains: ["service.sub.example.com"]
+  routes:
+  - match: { prefix: "/" }
+    route: { cluster: "cluster_exact" }
+)EOF";
+
+  factory_context_.cluster_manager_.initializeClusters(
+      {"cluster_exact", "cluster_long_suffix", "cluster_short_suffix", "cluster_long_prefix",
+       "cluster_short_prefix", "cluster_default"},
+      {});
+  TestConfigImpl config(parseRouteConfigurationFromYaml(yaml), factory_context_, true,
+                        creation_status_);
+  EXPECT_OK(creation_status_);
+
+  // 1. Exact match takes top precedence
+  {
+    Http::TestRequestHeaderMapImpl headers = genHeaders("service.sub.example.com", "/", "GET");
+    const auto route = config.route(headers, 0);
+    ASSERT_NE(nullptr, route);
+    EXPECT_EQ("vhost_exact", route->virtualHost().name());
+  }
+
+  // 2. Longer suffix takes precedence over shorter suffix
+  {
+    Http::TestRequestHeaderMapImpl headers = genHeaders("foo.sub.example.com", "/", "GET");
+    const auto route = config.route(headers, 0);
+    ASSERT_NE(nullptr, route);
+    EXPECT_EQ("vhost_long_suffix", route->virtualHost().name());
+  }
+  {
+    Http::TestRequestHeaderMapImpl headers = genHeaders("foo.example.com", "/", "GET");
+    const auto route = config.route(headers, 0);
+    ASSERT_NE(nullptr, route);
+    EXPECT_EQ("vhost_short_suffix", route->virtualHost().name());
+  }
+
+  // 3. Prefix wildcards (longer prefix over shorter prefix)
+  {
+    Http::TestRequestHeaderMapImpl headers = genHeaders("service.sub.org", "/", "GET");
+    const auto route = config.route(headers, 0);
+    ASSERT_NE(nullptr, route);
+    EXPECT_EQ("vhost_long_prefix", route->virtualHost().name());
+  }
+  {
+    Http::TestRequestHeaderMapImpl headers = genHeaders("service.net", "/", "GET");
+    const auto route = config.route(headers, 0);
+    ASSERT_NE(nullptr, route);
+    EXPECT_EQ("vhost_short_prefix", route->virtualHost().name());
+  }
+
+  // 4. Default catch-all
+  {
+    Http::TestRequestHeaderMapImpl headers = genHeaders("unmatched.other.org", "/", "GET");
+    const auto route = config.route(headers, 0);
+    ASSERT_NE(nullptr, route);
+    EXPECT_EQ("vhost_default", route->virtualHost().name());
+  }
+}
+
+TEST_F(RouteMatcherTest, DeferredVirtualHostConcurrentInflation) {
+  TestScopedRuntime scoped_runtime;
+  scoped_runtime.mergeValues(
+      {{"envoy.reloadable_features.deferred_virtual_host_creation", "true"}});
+
+  const std::string yaml = R"EOF(
+virtual_hosts:
+- name: concurrent_vhost
+  domains: ["concurrent.example.com"]
+  routes:
+  - match: { prefix: "/" }
+    route: { cluster: "concurrent_cluster" }
+)EOF";
+
+  factory_context_.cluster_manager_.initializeClusters({"concurrent_cluster"}, {});
+  TestConfigImpl config(parseRouteConfigurationFromYaml(yaml), factory_context_, true,
+                        creation_status_);
+  EXPECT_OK(creation_status_);
+
+  constexpr int num_threads = 8;
+  constexpr int iterations_per_thread = 100;
+  std::vector<std::thread> threads;
+  threads.reserve(num_threads);
+  std::atomic<bool> start_gate{false};
+  std::atomic<int> success_count{0};
+
+  for (int i = 0; i < num_threads; ++i) {
+    threads.emplace_back([&config, &start_gate, &success_count]() {
+      while (!start_gate.load(std::memory_order_acquire)) {
+        std::this_thread::yield();
+      }
+      for (int j = 0; j < iterations_per_thread; ++j) {
+        Http::TestRequestHeaderMapImpl headers =
+            genHeaders("concurrent.example.com", "/test", "GET");
+        const auto route = config.route(headers, 0);
+        if (route != nullptr && route->routeEntry()->clusterName() == "concurrent_cluster" &&
+            route->virtualHost().name() == "concurrent_vhost") {
+          success_count.fetch_add(1, std::memory_order_relaxed);
+        }
+      }
+    });
+  }
+
+  start_gate.store(true, std::memory_order_release);
+  for (auto& t : threads) {
+    t.join();
+  }
+
+  EXPECT_EQ(num_threads * iterations_per_thread, success_count.load());
+}
+
+TEST_F(RouteMatcherTest, DeferredVirtualHostIdleEviction) {
+  TestScopedRuntime scoped_runtime;
+  scoped_runtime.mergeValues(
+      {{"envoy.reloadable_features.deferred_virtual_host_creation", "true"}});
+
+  const std::string yaml = R"EOF(
+virtual_hosts:
+- name: evictable_vhost
+  domains: ["evictable.example.com"]
+  routes:
+  - match: { prefix: "/" }
+    route: { cluster: "evictable_cluster" }
+)EOF";
+
+  factory_context_.cluster_manager_.initializeClusters({"evictable_cluster"}, {});
+  TestConfigImpl config(parseRouteConfigurationFromYaml(yaml), factory_context_, true,
+                        creation_status_);
+  EXPECT_OK(creation_status_);
+
+  // 1. Initial request inflates the virtual host
+  Http::TestRequestHeaderMapImpl headers = genHeaders("evictable.example.com", "/test", "GET");
+  const auto route1 = config.route(headers, 0);
+  ASSERT_NE(nullptr, route1);
+  EXPECT_EQ("evictable_vhost", route1->virtualHost().name());
+
+  // 2. Idle eviction attempt with current_time_ms < last_access + idle_ttl should not evict
+  EXPECT_EQ(0, config.evictIdleVirtualHosts(100, 1000));
+
+  // 3. Idle eviction attempt after idle_ttl expires should successfully evict
+  EXPECT_EQ(1, config.evictIdleVirtualHosts(5000, 1000));
+
+  // Subsequent eviction with no inflation should return 0
+  EXPECT_EQ(0, config.evictIdleVirtualHosts(6000, 1000));
+
+  // 4. Subsequent request transparently re-inflates the virtual host on demand
+  const auto route2 = config.route(headers, 0);
+  ASSERT_NE(nullptr, route2);
+  EXPECT_EQ("evictable_vhost", route2->virtualHost().name());
+  EXPECT_EQ("evictable_cluster", route2->routeEntry()->clusterName());
+}
+
 } // namespace
 } // namespace Router
 } // namespace Envoy
+

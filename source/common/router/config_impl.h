@@ -506,6 +506,139 @@ using VirtualHostImplSharedPtr = std::shared_ptr<VirtualHostImpl>;
 using HeaderMutationsPtr = std::unique_ptr<Http::HeaderMutations>;
 
 /**
+ * Encapsulates the configuration and factory context required to construct a VirtualHostImpl on-demand.
+ */
+struct VirtualHostInitializationObject {
+  VirtualHostInitializationObject(
+      const envoy::config::route::v3::VirtualHost& vhost_proto,
+      const CommonConfigSharedPtr& global_route_config,
+      Server::Configuration::ServerFactoryContext& factory_context,
+      Stats::ScopeSharedPtr vhost_stats_scope,
+      ProtobufMessage::ValidationVisitor& validator,
+      Init::Manager& init_manager,
+      bool validate_clusters)
+      : vhost_proto_(vhost_proto),
+        global_route_config_(global_route_config),
+        factory_context_(factory_context),
+        vhost_stats_scope_(std::move(vhost_stats_scope)),
+        validator_(validator),
+        init_manager_(init_manager),
+        validate_clusters_(validate_clusters) {}
+
+  std::shared_ptr<const VirtualHostImpl> createVirtualHost() const {
+    absl::Status creation_status = absl::OkStatus();
+    auto vhost = std::make_shared<VirtualHostImpl>(
+        vhost_proto_, global_route_config_, factory_context_, *vhost_stats_scope_,
+        validator_, init_manager_, validate_clusters_, creation_status);
+    if (!creation_status.ok()) {
+      return nullptr;
+    }
+    return vhost;
+  }
+
+  const envoy::config::route::v3::VirtualHost vhost_proto_;
+  const CommonConfigSharedPtr global_route_config_;
+  Server::Configuration::ServerFactoryContext& factory_context_;
+  const Stats::ScopeSharedPtr vhost_stats_scope_;
+  ProtobufMessage::ValidationVisitor& validator_;
+  Init::Manager& init_manager_;
+  const bool validate_clusters_;
+};
+
+using VirtualHostInitObjectConstSharedPtr =
+    std::shared_ptr<const VirtualHostInitializationObject>;
+
+/**
+ * Manages the transition between dormant VirtualHostInitializationObject and active VirtualHostImpl
+ * using a shared lock-free CAS architecture.
+ */
+class DomainEntry {
+public:
+  explicit DomainEntry(VirtualHostInitObjectConstSharedPtr init_object)
+      : init_object_(std::move(init_object)) {}
+  explicit DomainEntry(VirtualHostImplSharedPtr eager_vhost)
+      : active_vhost_ref_(std::move(eager_vhost)),
+        active_vhost_(active_vhost_ref_.get()) {}
+
+  const VirtualHostImpl* getOrCreateVirtualHost(TimeSource& time_source) const {
+    const VirtualHostImpl* current = active_vhost_.load(std::memory_order_acquire);
+    if (current != nullptr) {
+      last_access_timestamp_.store(
+          std::chrono::duration_cast<std::chrono::milliseconds>(
+              time_source.monotonicTime().time_since_epoch())
+              .count(),
+          std::memory_order_relaxed);
+      return current;
+    }
+
+    if (!init_object_) {
+      return nullptr;
+    }
+
+    auto new_vhost = init_object_->createVirtualHost();
+    if (!new_vhost) {
+      return nullptr;
+    }
+
+    const VirtualHostImpl* new_vhost_ptr = new_vhost.get();
+    const VirtualHostImpl* expected = nullptr;
+    if (active_vhost_.compare_exchange_strong(expected, new_vhost_ptr,
+                                              std::memory_order_acq_rel,
+                                              std::memory_order_acquire)) {
+      active_vhost_ref_ = std::move(new_vhost);
+      last_access_timestamp_.store(
+          std::chrono::duration_cast<std::chrono::milliseconds>(
+              time_source.monotonicTime().time_since_epoch())
+              .count(),
+          std::memory_order_relaxed);
+      return new_vhost_ptr;
+    }
+
+    last_access_timestamp_.store(
+        std::chrono::duration_cast<std::chrono::milliseconds>(
+            time_source.monotonicTime().time_since_epoch())
+            .count(),
+        std::memory_order_relaxed);
+    return expected;
+  }
+
+  const VirtualHostImpl* activeVirtualHost() const {
+    return active_vhost_.load(std::memory_order_acquire);
+  }
+
+  bool evictIfIdle(uint64_t current_time_ms, uint64_t idle_ttl_ms) const {
+    if (!init_object_) {
+      return false;
+    }
+    const VirtualHostImpl* current = active_vhost_.load(std::memory_order_acquire);
+    if (current == nullptr) {
+      return false;
+    }
+    uint64_t last_access = last_access_timestamp_.load(std::memory_order_relaxed);
+    if (current_time_ms > last_access && (current_time_ms - last_access) >= idle_ttl_ms) {
+      const VirtualHostImpl* expected = current;
+      if (active_vhost_.compare_exchange_strong(expected, nullptr,
+                                                std::memory_order_acq_rel,
+                                                std::memory_order_acquire)) {
+        active_vhost_ref_.reset();
+        return true;
+      }
+    }
+    return false;
+  }
+
+  VirtualHostInitObjectConstSharedPtr initObject() const { return init_object_; }
+
+private:
+  const VirtualHostInitObjectConstSharedPtr init_object_;
+  mutable std::atomic<const VirtualHostImpl*> active_vhost_{nullptr};
+  mutable std::shared_ptr<const VirtualHostImpl> active_vhost_ref_;
+  mutable std::atomic<uint64_t> last_access_timestamp_{0};
+};
+
+using DomainEntrySharedPtr = std::shared_ptr<DomainEntry>;
+
+/**
  * Implementation of ShadowPolicy that reads from the proto route config.
  */
 class ShadowPolicyImpl : public ShadowPolicy {
@@ -1320,6 +1453,11 @@ public:
 
   const VirtualHostImpl* findVirtualHost(const Http::RequestHeaderMap& headers) const;
 
+  /**
+   * Periodically called to evict idle virtual hosts that have exceeded the idle TTL.
+   */
+  size_t evictIdleVirtualHosts(uint64_t current_time_ms, uint64_t idle_ttl_ms) const;
+
 private:
   RouteMatcher(const envoy::config::route::v3::RouteConfiguration& config,
                const CommonConfigSharedPtr& global_route_config,
@@ -1327,29 +1465,23 @@ private:
                ProtobufMessage::ValidationVisitor& validator, Init::Manager& init_manager,
                bool validate_clusters, absl::Status& creation_status);
 
-  using WildcardVirtualHosts =
-      std::map<int64_t, absl::flat_hash_map<std::string, VirtualHostImplSharedPtr>, std::greater<>>;
+  using WildcardDomainEntries =
+      std::map<int64_t, absl::flat_hash_map<std::string, DomainEntrySharedPtr>, std::greater<>>;
   using SubstringFunction = std::function<absl::string_view(absl::string_view, int)>;
-  const VirtualHostImpl* findWildcardVirtualHost(absl::string_view host,
-                                                 const WildcardVirtualHosts& wildcard_virtual_hosts,
-                                                 SubstringFunction substring_function) const;
+  const DomainEntry* findWildcardDomainEntry(absl::string_view host,
+                                             const WildcardDomainEntries& wildcard_domain_entries,
+                                             SubstringFunction substring_function) const;
+  const DomainEntry* findDomainEntry(absl::string_view host_header_value) const;
   bool ignorePortInHostMatching() const { return ignore_port_in_host_matching_; }
 
+  TimeSource& time_source_;
   Stats::ScopeSharedPtr vhost_scope_;
-  absl::flat_hash_map<std::string, VirtualHostImplSharedPtr> virtual_hosts_;
-  // std::greater as a minor optimization to iterate from more to less specific
-  //
-  // A note on using an unordered_map versus a vector of (string, VirtualHostImplSharedPtr) pairs:
-  //
-  // Based on local benchmarks, each vector entry costs around 20ns for recall and (string)
-  // comparison with a fixed cost of about 25ns. For unordered_map, the empty map costs about 65ns
-  // and climbs to about 110ns once there are any entries.
-  //
-  // The break-even is 4 entries.
-  WildcardVirtualHosts wildcard_virtual_host_suffixes_;
-  WildcardVirtualHosts wildcard_virtual_host_prefixes_;
+  std::vector<DomainEntrySharedPtr> all_domain_entries_;
+  absl::flat_hash_map<std::string, DomainEntrySharedPtr> exact_domain_entries_;
+  WildcardDomainEntries wildcard_domain_suffixes_;
+  WildcardDomainEntries wildcard_domain_prefixes_;
 
-  VirtualHostImplSharedPtr default_virtual_host_;
+  DomainEntrySharedPtr default_domain_entry_;
   const bool ignore_port_in_host_matching_{false};
   const Http::LowerCaseString vhost_header_;
 };

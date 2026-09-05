@@ -1921,14 +1921,14 @@ RouteConstSharedPtr VirtualHostImpl::getRouteFromEntries(const RouteCallback& cb
   return getRouteFromRoutes(cb, route_match_context, stream_info, random_value, routes_);
 }
 
-const VirtualHostImpl* RouteMatcher::findWildcardVirtualHost(
-    absl::string_view host, const RouteMatcher::WildcardVirtualHosts& wildcard_virtual_hosts,
+const DomainEntry* RouteMatcher::findWildcardDomainEntry(
+    absl::string_view host, const RouteMatcher::WildcardDomainEntries& wildcard_domain_entries,
     RouteMatcher::SubstringFunction substring_function) const {
   // We do a longest wildcard match against the host that's passed in
   // (e.g. "foo-bar.baz.com" should match "*-bar.baz.com" before matching "*.baz.com" for suffix
   // wildcards). This is done by scanning the length => wildcards map looking for every wildcard
   // whose size is < length.
-  for (const auto& iter : wildcard_virtual_hosts) {
+  for (const auto& iter : wildcard_domain_entries) {
     const uint32_t wildcard_length = iter.first;
     const auto& wildcard_map = iter.second;
     // >= because *.foo.com shouldn't match .foo.com.
@@ -1942,6 +1942,7 @@ const VirtualHostImpl* RouteMatcher::findWildcardVirtualHost(
   }
   return nullptr;
 }
+
 absl::StatusOr<std::unique_ptr<RouteMatcher>>
 RouteMatcher::create(const envoy::config::route::v3::RouteConfiguration& route_config,
                      const CommonConfigSharedPtr& global_route_config,
@@ -1955,42 +1956,59 @@ RouteMatcher::create(const envoy::config::route::v3::RouteConfiguration& route_c
   RETURN_IF_NOT_OK(creation_status);
   return ret;
 }
+
 RouteMatcher::RouteMatcher(const envoy::config::route::v3::RouteConfiguration& route_config,
                            const CommonConfigSharedPtr& global_route_config,
                            Server::Configuration::ServerFactoryContext& factory_context,
                            ProtobufMessage::ValidationVisitor& validator,
                            Init::Manager& init_manager, bool validate_clusters,
                            absl::Status& creation_status)
-    : vhost_scope_(factory_context.scope().scopeFromStatName(
+    : time_source_(factory_context.timeSource()),
+      vhost_scope_(factory_context.scope().scopeFromStatName(
           factory_context.routerContext().virtualClusterStatNames().vhost_)),
       ignore_port_in_host_matching_(route_config.ignore_port_in_host_matching()),
       vhost_header_(route_config.vhost_header()) {
+  const bool deferred_vhost_enabled =
+      Runtime::runtimeFeatureEnabled("envoy.reloadable_features.deferred_virtual_host_creation");
+
   for (const auto& virtual_host_config : route_config.virtual_hosts()) {
-    VirtualHostImplSharedPtr virtual_host = std::make_shared<VirtualHostImpl>(
-        virtual_host_config, global_route_config, factory_context, *vhost_scope_, validator,
-        init_manager, validate_clusters, creation_status);
-    SET_AND_RETURN_IF_NOT_OK(creation_status, creation_status);
+    DomainEntrySharedPtr domain_entry;
+    if (deferred_vhost_enabled) {
+      auto init_object = std::make_shared<VirtualHostInitializationObject>(
+          virtual_host_config, global_route_config, factory_context, vhost_scope_, validator,
+          init_manager, validate_clusters);
+      domain_entry = std::make_shared<DomainEntry>(std::move(init_object));
+    } else {
+      VirtualHostImplSharedPtr virtual_host = std::make_shared<VirtualHostImpl>(
+          virtual_host_config, global_route_config, factory_context, *vhost_scope_, validator,
+          init_manager, validate_clusters, creation_status);
+      SET_AND_RETURN_IF_NOT_OK(creation_status, creation_status);
+      domain_entry = std::make_shared<DomainEntry>(std::move(virtual_host));
+    }
+
+    all_domain_entries_.push_back(domain_entry);
+
     for (const std::string& domain_name : virtual_host_config.domains()) {
       const Http::LowerCaseString lower_case_domain_name(domain_name);
       absl::string_view domain = lower_case_domain_name;
       bool duplicate_found = false;
       if ("*" == domain) {
-        if (default_virtual_host_) {
+        if (default_domain_entry_) {
           creation_status = absl::InvalidArgumentError(fmt::format(
               "Only a single wildcard domain is permitted in route {}", route_config.name()));
           return;
         }
-        default_virtual_host_ = virtual_host;
+        default_domain_entry_ = domain_entry;
       } else if (!domain.empty() && '*' == domain[0]) {
-        duplicate_found = !wildcard_virtual_host_suffixes_[domain.size() - 1]
-                               .emplace(domain.substr(1), virtual_host)
+        duplicate_found = !wildcard_domain_suffixes_[domain.size() - 1]
+                               .emplace(domain.substr(1), domain_entry)
                                .second;
       } else if (!domain.empty() && '*' == domain[domain.size() - 1]) {
-        duplicate_found = !wildcard_virtual_host_prefixes_[domain.size() - 1]
-                               .emplace(domain.substr(0, domain.size() - 1), virtual_host)
+        duplicate_found = !wildcard_domain_prefixes_[domain.size() - 1]
+                               .emplace(domain.substr(0, domain.size() - 1), domain_entry)
                                .second;
       } else {
-        duplicate_found = !virtual_hosts_.emplace(domain, virtual_host).second;
+        duplicate_found = !exact_domain_entries_.emplace(domain, domain_entry).second;
       }
       if (duplicate_found) {
         creation_status = absl::InvalidArgumentError(
@@ -2003,13 +2021,43 @@ RouteMatcher::RouteMatcher(const envoy::config::route::v3::RouteConfiguration& r
   }
 }
 
-const VirtualHostImpl* RouteMatcher::findVirtualHost(const Http::RequestHeaderMap& headers) const {
-  // Fast path the case where we only have a default virtual host.
-  if (virtual_hosts_.empty() && wildcard_virtual_host_suffixes_.empty() &&
-      wildcard_virtual_host_prefixes_.empty()) {
-    return default_virtual_host_.get();
+const DomainEntry* RouteMatcher::findDomainEntry(absl::string_view host_header_value) const {
+  if (exact_domain_entries_.empty() && wildcard_domain_suffixes_.empty() &&
+      wildcard_domain_prefixes_.empty()) {
+    return default_domain_entry_.get();
   }
 
+  absl::string_view host = host_header_value;
+  std::string lowercase_host;
+  if (std::any_of(host_header_value.begin(), host_header_value.end(),
+                  [](char c) { return absl::ascii_isupper(static_cast<unsigned char>(c)); })) {
+    lowercase_host = absl::AsciiStrToLower(host_header_value);
+    host = lowercase_host;
+  }
+  const auto iter = exact_domain_entries_.find(host);
+  if (iter != exact_domain_entries_.end()) {
+    return iter->second.get();
+  }
+  if (!wildcard_domain_suffixes_.empty()) {
+    const DomainEntry* entry = findWildcardDomainEntry(
+        host, wildcard_domain_suffixes_,
+        [](absl::string_view h, int l) -> absl::string_view { return h.substr(h.size() - l); });
+    if (entry != nullptr) {
+      return entry;
+    }
+  }
+  if (!wildcard_domain_prefixes_.empty()) {
+    const DomainEntry* entry = findWildcardDomainEntry(
+        host, wildcard_domain_prefixes_,
+        [](absl::string_view h, int l) -> absl::string_view { return h.substr(0, l); });
+    if (entry != nullptr) {
+      return entry;
+    }
+  }
+  return default_domain_entry_.get();
+}
+
+const VirtualHostImpl* RouteMatcher::findVirtualHost(const Http::RequestHeaderMap& headers) const {
   absl::string_view host_header_value;
   if (!vhost_header_.get().empty()) {
     auto result = headers.get(vhost_header_);
@@ -2034,40 +2082,22 @@ const VirtualHostImpl* RouteMatcher::findVirtualHost(const Http::RequestHeaderMa
       host_header_value = host_header_value.substr(0, port_start);
     }
   }
-  // TODO (@rshriram) Match Origin header in WebSocket
-  // request with VHost, using wildcard match
-  // Lower-case the value of the host header, as hostnames are case insensitive. Hosts on the wire
-  // are overwhelmingly lower-case already (DNS names normalize to lower-case per RFC 3986 3.2.2),
-  // so scan first and only build a lower-cased copy when an upper-case byte is present. This keeps
-  // the common path allocation-free instead of always constructing a std::string.
-  absl::string_view host = host_header_value;
-  std::string lowercase_host;
-  if (std::any_of(host_header_value.begin(), host_header_value.end(),
-                  [](char c) { return absl::ascii_isupper(static_cast<unsigned char>(c)); })) {
-    lowercase_host = absl::AsciiStrToLower(host_header_value);
-    host = lowercase_host;
+
+  const DomainEntry* entry = findDomainEntry(host_header_value);
+  if (entry == nullptr) {
+    return nullptr;
   }
-  const auto iter = virtual_hosts_.find(host);
-  if (iter != virtual_hosts_.end()) {
-    return iter->second.get();
-  }
-  if (!wildcard_virtual_host_suffixes_.empty()) {
-    const VirtualHostImpl* vhost = findWildcardVirtualHost(
-        host, wildcard_virtual_host_suffixes_,
-        [](absl::string_view h, int l) -> absl::string_view { return h.substr(h.size() - l); });
-    if (vhost != nullptr) {
-      return vhost;
+  return entry->getOrCreateVirtualHost(time_source_);
+}
+
+size_t RouteMatcher::evictIdleVirtualHosts(uint64_t current_time_ms, uint64_t idle_ttl_ms) const {
+  size_t evicted_count = 0;
+  for (const auto& entry : all_domain_entries_) {
+    if (entry && entry->evictIfIdle(current_time_ms, idle_ttl_ms)) {
+      ++evicted_count;
     }
   }
-  if (!wildcard_virtual_host_prefixes_.empty()) {
-    const VirtualHostImpl* vhost = findWildcardVirtualHost(
-        host, wildcard_virtual_host_prefixes_,
-        [](absl::string_view h, int l) -> absl::string_view { return h.substr(0, l); });
-    if (vhost != nullptr) {
-      return vhost;
-    }
-  }
-  return default_virtual_host_.get();
+  return evicted_count;
 }
 
 VirtualHostRoute RouteMatcher::route(const RouteCallback& cb, const Http::RequestHeaderMap& headers,
