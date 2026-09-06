@@ -2780,6 +2780,232 @@ TEST_F(ClusterManagerImplTest, LocalInterfaceNameForUpstreamConnectionThrowsInWi
 }
 #endif
 
+
+TEST_F(ClusterManagerImplTest, BatchClusterUpdatesBasic) {
+  const std::string yaml = R"EOF(
+  static_resources:
+    clusters:
+    - name: cluster_0
+      connect_timeout: 0.250s
+      type: STATIC
+      lb_policy: ROUND_ROBIN
+      load_assignment:
+        cluster_name: cluster_0
+        endpoints:
+        - lb_endpoints:
+          - endpoint:
+              address:
+                socket_address:
+                  address: 127.0.0.1
+                  port_value: 11000
+  )EOF";
+  create(parseBootstrapFromV3Yaml(yaml));
+  EXPECT_NE(nullptr, cluster_manager_->getThreadLocalCluster("cluster_0"));
+
+  const std::string added_yaml = R"EOF(
+    name: added_via_api
+    connect_timeout: 0.250s
+    type: STATIC
+    lb_policy: ROUND_ROBIN
+    load_assignment:
+      cluster_name: added_via_api
+      endpoints:
+      - lb_endpoints:
+        - endpoint:
+            address:
+              socket_address:
+                address: 127.0.0.1
+                port_value: 11001
+  )EOF";
+  auto cluster = parseClusterFromV3Yaml(added_yaml);
+
+  {
+    auto batch = cluster_manager_->createSourceBatch();
+    EXPECT_NE(nullptr, batch);
+    EXPECT_TRUE(*cluster_manager_->addOrUpdateCluster(cluster, "v1", true));
+    EXPECT_TRUE(cluster_manager_->hasCluster("added_via_api"));
+  }
+
+  EXPECT_NE(nullptr, cluster_manager_->getThreadLocalCluster("added_via_api"));
+}
+
+TEST_F(ClusterManagerImplTest, BatchClusterUpdatesNested) {
+  const std::string yaml = R"EOF(
+  static_resources:
+    clusters:
+    - name: cluster_0
+      connect_timeout: 0.250s
+      type: STATIC
+      lb_policy: ROUND_ROBIN
+      load_assignment:
+        cluster_name: cluster_0
+        endpoints:
+        - lb_endpoints:
+          - endpoint:
+              address:
+                socket_address:
+                  address: 127.0.0.1
+                  port_value: 11000
+  )EOF";
+  create(parseBootstrapFromV3Yaml(yaml));
+
+  const std::string added_yaml = R"EOF(
+    name: added_via_api
+    connect_timeout: 0.250s
+    type: STATIC
+    lb_policy: ROUND_ROBIN
+    load_assignment:
+      cluster_name: added_via_api
+      endpoints:
+      - lb_endpoints:
+        - endpoint:
+            address:
+              socket_address:
+                address: 127.0.0.1
+                port_value: 11001
+  )EOF";
+  auto cluster = parseClusterFromV3Yaml(added_yaml);
+
+  {
+    auto outer_batch = cluster_manager_->createSourceBatch();
+    EXPECT_NE(nullptr, outer_batch);
+
+    {
+      auto inner_batch = cluster_manager_->createSourceBatch();
+      EXPECT_NE(nullptr, inner_batch);
+      EXPECT_TRUE(*cluster_manager_->addOrUpdateCluster(cluster, "v1", true));
+    }
+    EXPECT_TRUE(cluster_manager_->hasCluster("added_via_api"));
+  }
+
+  EXPECT_NE(nullptr, cluster_manager_->getThreadLocalCluster("added_via_api"));
+}
+
+TEST_F(ClusterManagerImplTest, BatchClusterUpdatesDisabledByRuntime) {
+  TestScopedRuntime scoped_runtime;
+  scoped_runtime.mergeValues(
+      {{"envoy.reloadable_features.batch_cluster_updates", "false"}});
+
+  const std::string yaml = R"EOF(
+  static_resources:
+    clusters:
+    - name: cluster_0
+      connect_timeout: 0.250s
+      type: STATIC
+      lb_policy: ROUND_ROBIN
+      load_assignment:
+        cluster_name: cluster_0
+        endpoints:
+        - lb_endpoints:
+          - endpoint:
+              address:
+                socket_address:
+                  address: 127.0.0.1
+                  port_value: 11000
+  )EOF";
+  create(parseBootstrapFromV3Yaml(yaml));
+
+  EXPECT_EQ(nullptr, cluster_manager_->createSourceBatch());
+
+  const std::string added_yaml = R"EOF(
+    name: added_via_api
+    connect_timeout: 0.250s
+    type: STATIC
+    lb_policy: ROUND_ROBIN
+    load_assignment:
+      cluster_name: added_via_api
+      endpoints:
+      - lb_endpoints:
+        - endpoint:
+            address:
+              socket_address:
+                address: 127.0.0.1
+                port_value: 11001
+  )EOF";
+  auto cluster = parseClusterFromV3Yaml(added_yaml);
+
+  EXPECT_TRUE(*cluster_manager_->addOrUpdateCluster(cluster, "v1", true));
+  EXPECT_NE(nullptr, cluster_manager_->getThreadLocalCluster("added_via_api"));
+}
+
+TEST_F(ClusterManagerImplTest, BatchClusterUpdatesEmptyBatch) {
+  const std::string yaml = R"EOF(
+  static_resources:
+    clusters:
+    - name: cluster_0
+      connect_timeout: 0.250s
+      type: STATIC
+      lb_policy: ROUND_ROBIN
+      load_assignment:
+        cluster_name: cluster_0
+        endpoints:
+        - lb_endpoints:
+          - endpoint:
+              address:
+                socket_address:
+                  address: 127.0.0.1
+                  port_value: 11000
+  )EOF";
+  create(parseBootstrapFromV3Yaml(yaml));
+
+  {
+    auto batch = cluster_manager_->createSourceBatch();
+    EXPECT_NE(nullptr, batch);
+  }
+
+  EXPECT_NE(nullptr, cluster_manager_->getThreadLocalCluster("cluster_0"));
+}
+
+TEST_F(ClusterManagerImplTest, BatchClusterUpdatesRemoval) {
+  const std::string yaml = R"EOF(
+  static_resources:
+    clusters:
+    - name: cluster_0
+      connect_timeout: 0.250s
+      type: STATIC
+      lb_policy: ROUND_ROBIN
+      load_assignment:
+        cluster_name: cluster_0
+        endpoints:
+        - lb_endpoints:
+          - endpoint:
+              address:
+                socket_address:
+                  address: 127.0.0.1
+                  port_value: 11000
+  )EOF";
+  create(parseBootstrapFromV3Yaml(yaml));
+
+  const std::string added_yaml = R"EOF(
+    name: added_via_api
+    connect_timeout: 0.250s
+    type: STATIC
+    lb_policy: ROUND_ROBIN
+    load_assignment:
+      cluster_name: added_via_api
+      endpoints:
+      - lb_endpoints:
+        - endpoint:
+            address:
+              socket_address:
+                address: 127.0.0.1
+                port_value: 11001
+  )EOF";
+  auto cluster = parseClusterFromV3Yaml(added_yaml);
+  EXPECT_TRUE(*cluster_manager_->addOrUpdateCluster(cluster, "v1", true));
+  EXPECT_NE(nullptr, cluster_manager_->getThreadLocalCluster("added_via_api"));
+
+  {
+    auto batch = cluster_manager_->createSourceBatch();
+    EXPECT_NE(nullptr, batch);
+    EXPECT_TRUE(cluster_manager_->removeCluster("added_via_api", true));
+    EXPECT_FALSE(cluster_manager_->hasCluster("added_via_api"));
+  }
+
+  EXPECT_EQ(nullptr, cluster_manager_->getThreadLocalCluster("added_via_api"));
+}
+
 } // namespace
 } // namespace Upstream
 } // namespace Envoy
+

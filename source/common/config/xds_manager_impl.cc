@@ -473,7 +473,7 @@ XdsManagerImpl::createAuthority(const envoy::config::core::v3::ConfigSource& con
     authority_mux = factory->create(
         std::move(primary_client), std::move(failover_client), main_thread_dispatcher_, random_,
         *stats_.rootScope(), api_config_source, local_info_, std::move(custom_config_validators),
-        std::move(backoff_strategy), xds_config_tracker, {}, lrs_factory);
+        std::move(backoff_strategy), xds_config_tracker, {}, lrs_factory, *cm_);
   } else {
     ASSERT(api_config_source.api_type() ==
            envoy::config::core::v3::ApiConfigSource::AGGREGATED_GRPC);
@@ -508,7 +508,7 @@ XdsManagerImpl::createAuthority(const envoy::config::core::v3::ConfigSource& con
     authority_mux = factory->create(
         std::move(primary_client), std::move(failover_client), main_thread_dispatcher_, random_,
         *stats_.rootScope(), api_config_source, local_info_, std::move(custom_config_validators),
-        std::move(backoff_strategy), xds_config_tracker, xds_resources_delegate, lrs_factory);
+        std::move(backoff_strategy), xds_config_tracker, xds_resources_delegate, lrs_factory, *cm_);
   }
   ASSERT(authority_mux != nullptr);
 

@@ -54,7 +54,8 @@ NewGrpcMuxImpl::NewGrpcMuxImpl(GrpcMuxContext& grpc_mux_context)
       skip_subsequent_node_(grpc_mux_context.skip_subsequent_node_ &&
                             Runtime::runtimeFeatureEnabled(
                                 "envoy.reloadable_features.xds_legacy_delta_skip_subsequent_node")),
-      eds_resources_cache_(std::move(grpc_mux_context.eds_resources_cache_)) {
+      eds_resources_cache_(std::move(grpc_mux_context.eds_resources_cache_)),
+      cluster_manager_(grpc_mux_context.cluster_manager_) {
   AllMuxes::get().insert(this);
 }
 
@@ -177,6 +178,13 @@ void NewGrpcMuxImpl::onDiscoveryResponse(
       ENVOY_LOG(debug, "Receiving gRPC updates for {} from {}", message->type_url(),
                 sub->second->control_plane_identifier_);
     }
+  }
+
+  Upstream::ClusterUpdateBatchPtr batch;
+  if (cluster_manager_.has_value() &&
+      message->type_url() ==
+          Config::getTypeUrl<envoy::config::endpoint::v3::ClusterLoadAssignment>()) {
+    batch = cluster_manager_->createSourceBatch();
   }
 
   auto ack = sub->second->sub_state_.handleResponse(*message);

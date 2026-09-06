@@ -361,10 +361,146 @@ ClusterManagerImpl::ClusterManagerImpl(const envoy::config::bootstrap::v3::Boots
   SET_AND_RETURN_IF_NOT_OK(xds_manager_.initialize(bootstrap, this), creation_status);
 }
 
+ClusterUpdateBatchPtr ClusterManagerImpl::createSourceBatch() {
+  if (Runtime::runtimeFeatureEnabled("envoy.reloadable_features.batch_cluster_updates")) {
+    return std::make_unique<ClusterUpdateBatchImpl>(*this);
+  }
+  return nullptr;
+}
+
+void ClusterManagerImpl::startBatch() {
+  active_batches_++;
+}
+
+void ClusterManagerImpl::endBatch() {
+  ASSERT(active_batches_ > 0);
+  active_batches_--;
+  if (active_batches_ == 0) {
+    applyPendingThreadLocalUpdates();
+  }
+}
+
+void ClusterManagerImpl::applyPendingThreadLocalUpdates() {
+  if (pending_thread_local_actions_.empty()) {
+    return;
+  }
+  auto pending_actions = std::make_shared<std::vector<PendingThreadLocalAction>>(
+      std::move(pending_thread_local_actions_));
+  pending_thread_local_actions_.clear();
+
+  tls_.runOnAllThreads([pending_actions](OptRef<ThreadLocalClusterManagerImpl> cluster_manager) {
+    ASSERT(cluster_manager.has_value(),
+           "Expected the ThreadLocalClusterManager to be set during ClusterManagerImpl creation.");
+    for (const auto& action : *pending_actions) {
+      if (action.type_ == PendingThreadLocalAction::Type::Removal) {
+        const std::string& cluster_name = action.removal_cluster_name_;
+        ENVOY_LOG(debug, "removing TLS cluster {}", cluster_name);
+        for (auto cb_it = cluster_manager->update_callbacks_.begin();
+             cb_it != cluster_manager->update_callbacks_.end();) {
+          auto curr_cb_it = cb_it;
+          ++cb_it;
+          (*curr_cb_it)->onClusterRemoval(cluster_name);
+        }
+        cluster_manager->thread_local_clusters_.erase(cluster_name);
+        cluster_manager->thread_local_deferred_clusters_.erase(cluster_name);
+        cluster_manager->local_stats_.clusters_inflated_.set(
+            cluster_manager->thread_local_clusters_.size());
+      } else {
+        const auto& info = action.info_;
+        const auto& params = action.params_;
+        const bool add_or_update_cluster = action.add_or_update_cluster_;
+        const auto& load_balancer_factory = action.load_balancer_factory_;
+        const auto& map = action.host_map_;
+        const auto& cluster_initialization_object = action.cluster_initialization_object_;
+        const UnitFloat drop_overload = action.drop_overload_;
+        const auto& drop_category = action.drop_category_;
+        const bool enable_batch_aware_update = action.enable_batch_aware_update_;
+
+        if (const bool defer_unused_clusters =
+                cluster_initialization_object != nullptr &&
+                !cluster_manager->thread_local_clusters_.contains(info->name()) &&
+                !Envoy::Thread::MainThread::isMainThread();
+            defer_unused_clusters) {
+          cluster_manager->thread_local_deferred_clusters_[info->name()] =
+              cluster_initialization_object;
+
+          ThreadLocalClusterCommand command = [&cluster_manager,
+                                               cluster_name = info->name()]() -> ThreadLocalCluster& {
+            auto existing_cluster_entry = cluster_manager->thread_local_clusters_.find(cluster_name);
+            if (existing_cluster_entry != cluster_manager->thread_local_clusters_.end()) {
+              return *existing_cluster_entry->second;
+            }
+            auto* cluster_entry = cluster_manager->initializeClusterInlineIfExists(cluster_name);
+            ASSERT(cluster_entry != nullptr, "Deferred clusters initiailization should not fail.");
+            return *cluster_entry;
+          };
+          for (auto cb_it = cluster_manager->update_callbacks_.begin();
+               cb_it != cluster_manager->update_callbacks_.end();) {
+            auto curr_cb_it = cb_it;
+            ++cb_it;
+            (*curr_cb_it)->onClusterAddOrUpdate(info->name(), command);
+          }
+        } else {
+          ThreadLocalClusterManagerImpl::ClusterEntry* new_cluster = nullptr;
+          if (add_or_update_cluster) {
+            if (cluster_manager->thread_local_clusters_.contains(info->name())) {
+              ENVOY_LOG(debug, "updating TLS cluster {}", info->name());
+            } else {
+              ENVOY_LOG(debug, "adding TLS cluster {}", info->name());
+            }
+
+            new_cluster = new ThreadLocalClusterManagerImpl::ClusterEntry(*cluster_manager, info,
+                                                                          load_balancer_factory);
+            cluster_manager->thread_local_clusters_[info->name()].reset(new_cluster);
+            cluster_manager->local_stats_.clusters_inflated_.set(
+                cluster_manager->thread_local_clusters_.size());
+          }
+
+          if (cluster_manager->thread_local_clusters_[info->name()]) {
+            cluster_manager->thread_local_clusters_[info->name()]->setDropOverload(drop_overload);
+            cluster_manager->thread_local_clusters_[info->name()]->setDropCategory(drop_category);
+          }
+          if (enable_batch_aware_update) {
+            std::vector<std::reference_wrapper<const ThreadLocalClusterUpdateParams::PerPriority>>
+                updates;
+            updates.reserve(params.per_priority_update_params_.size());
+            for (const auto& per_priority : params.per_priority_update_params_) {
+              updates.emplace_back(per_priority);
+            }
+            cluster_manager->thread_local_clusters_[info->name()]->updateHosts(updates, map);
+          } else {
+            for (const auto& per_priority : params.per_priority_update_params_) {
+              cluster_manager->updateClusterMembership(
+                  info->name(), per_priority.priority_, per_priority.update_hosts_params_,
+                  per_priority.locality_weights_, per_priority.hosts_added_,
+                  per_priority.hosts_removed_, per_priority.weighted_priority_health_,
+                  per_priority.overprovisioning_factor_, map);
+            }
+          }
+
+          if (new_cluster != nullptr) {
+            ThreadLocalClusterCommand command = [&new_cluster]() -> ThreadLocalCluster& {
+              return *new_cluster;
+            };
+            for (auto cb_it = cluster_manager->update_callbacks_.begin();
+                 cb_it != cluster_manager->update_callbacks_.end();) {
+              auto curr_cb_it = cb_it;
+              ++cb_it;
+              (*curr_cb_it)->onClusterAddOrUpdate(info->name(), command);
+            }
+          }
+        }
+      }
+    }
+  });
+}
+
 absl::Status
 ClusterManagerImpl::initialize(const envoy::config::bootstrap::v3::Bootstrap& bootstrap) {
   ASSERT(!initialized_);
   initialized_ = true;
+
+  auto batch = createSourceBatch();
 
   // Cluster loading happens in two phases: first all the primary clusters are loaded, and then all
   // the secondary clusters are loaded. As it currently stands all non-EDS clusters and EDS which
@@ -873,24 +1009,32 @@ bool ClusterManagerImpl::removeCluster(absl::string_view cluster_name, const boo
     active_clusters_.erase(existing_active_cluster);
 
     ENVOY_LOG(debug, "removing cluster {}", cluster_name);
-    tls_.runOnAllThreads([cluster_name = std::string(cluster_name)](
-                             OptRef<ThreadLocalClusterManagerImpl> cluster_manager) {
-      ASSERT(cluster_manager->thread_local_clusters_.contains(cluster_name) ||
-             cluster_manager->thread_local_deferred_clusters_.contains(cluster_name));
-      ENVOY_LOG(debug, "removing TLS cluster {}", cluster_name);
-      for (auto cb_it = cluster_manager->update_callbacks_.begin();
-           cb_it != cluster_manager->update_callbacks_.end();) {
-        // The current callback may remove itself from the list, so a handle for
-        // the next item is fetched before calling the callback.
-        auto curr_cb_it = cb_it;
-        ++cb_it;
-        (*curr_cb_it)->onClusterRemoval(cluster_name);
-      }
-      cluster_manager->thread_local_clusters_.erase(cluster_name);
-      cluster_manager->thread_local_deferred_clusters_.erase(cluster_name);
-      cluster_manager->local_stats_.clusters_inflated_.set(
-          cluster_manager->thread_local_clusters_.size());
-    });
+    if (active_batches_ > 0 &&
+        Runtime::runtimeFeatureEnabled("envoy.reloadable_features.batch_cluster_updates")) {
+      PendingThreadLocalAction action;
+      action.type_ = PendingThreadLocalAction::Type::Removal;
+      action.removal_cluster_name_ = std::string(cluster_name);
+      pending_thread_local_actions_.push_back(std::move(action));
+    } else {
+      tls_.runOnAllThreads([cluster_name = std::string(cluster_name)](
+                               OptRef<ThreadLocalClusterManagerImpl> cluster_manager) {
+        ASSERT(cluster_manager->thread_local_clusters_.contains(cluster_name) ||
+               cluster_manager->thread_local_deferred_clusters_.contains(cluster_name));
+        ENVOY_LOG(debug, "removing TLS cluster {}", cluster_name);
+        for (auto cb_it = cluster_manager->update_callbacks_.begin();
+             cb_it != cluster_manager->update_callbacks_.end();) {
+          // The current callback may remove itself from the list, so a handle for
+          // the next item is fetched before calling the callback.
+          auto curr_cb_it = cb_it;
+          ++cb_it;
+          (*curr_cb_it)->onClusterRemoval(cluster_name);
+        }
+        cluster_manager->thread_local_clusters_.erase(cluster_name);
+        cluster_manager->thread_local_deferred_clusters_.erase(cluster_name);
+        cluster_manager->local_stats_.clusters_inflated_.set(
+            cluster_manager->thread_local_clusters_.size());
+      });
+    }
     cluster_initialization_map_.erase(cluster_name);
   }
 
@@ -1266,7 +1410,22 @@ void ClusterManagerImpl::postThreadLocalClusterUpdate(ClusterManagerCluster& cm_
                                                         load_balancer_factory, host_map,
                                                         drop_overload, drop_category);
 
-  tls_.runOnAllThreads([info = cm_cluster.cluster().info(), params = std::move(params),
+  if (active_batches_ > 0 &&
+      Runtime::runtimeFeatureEnabled("envoy.reloadable_features.batch_cluster_updates")) {
+    PendingThreadLocalAction action;
+    action.type_ = PendingThreadLocalAction::Type::Update;
+    action.info_ = cm_cluster.cluster().info();
+    action.params_ = std::move(params);
+    action.add_or_update_cluster_ = add_or_update_cluster;
+    action.load_balancer_factory_ = load_balancer_factory;
+    action.host_map_ = std::move(host_map);
+    action.cluster_initialization_object_ = std::move(cluster_initialization_object);
+    action.drop_overload_ = drop_overload;
+    action.drop_category_ = std::move(drop_category);
+    action.enable_batch_aware_update_ = enable_batch_aware_update;
+    pending_thread_local_actions_.push_back(std::move(action));
+  } else {
+    tls_.runOnAllThreads([info = cm_cluster.cluster().info(), params = std::move(params),
                         add_or_update_cluster, load_balancer_factory, map = std::move(host_map),
                         cluster_initialization_object = std::move(cluster_initialization_object),
                         drop_overload, drop_category = std::move(drop_category),
@@ -1366,6 +1525,7 @@ void ClusterManagerImpl::postThreadLocalClusterUpdate(ClusterManagerCluster& cm_
       }
     }
   });
+  }
 
   // By this time, the main thread has received the cluster initialization update, so we can start
   // the ADS mux if the ADS mux is dependent on this cluster's initialization.

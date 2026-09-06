@@ -75,6 +75,7 @@ GrpcMuxImpl::GrpcMuxImpl(GrpcMuxContext& grpc_mux_context)
       eds_resources_cache_(std::move(grpc_mux_context.eds_resources_cache_)),
       target_xds_authority_(grpc_mux_context.target_xds_authority_),
       load_stats_reporter_factory_(grpc_mux_context.load_stats_reporter_factory_),
+      cluster_manager_(grpc_mux_context.cluster_manager_),
       dynamic_update_callback_handle_(
           grpc_mux_context.local_info_.contextProvider().addDynamicContextUpdateCallback(
               [this](absl::string_view resource_type_url) {
@@ -411,6 +412,12 @@ void GrpcMuxImpl::onDiscoveryResponse(
   // see https://github.com/envoyproxy/envoy/issues/11477.
   same_type_resume = pause(type_url);
   TRY_ASSERT_MAIN_THREAD {
+    Upstream::ClusterUpdateBatchPtr batch;
+    if (cluster_manager_.has_value() &&
+        type_url == Config::getTypeUrl<envoy::config::endpoint::v3::ClusterLoadAssignment>()) {
+      batch = cluster_manager_->createSourceBatch();
+    }
+
     std::vector<DecodedResourcePtr> resources;
     OpaqueResourceDecoder& resource_decoder = *api_state.watches_.front()->resource_decoder_;
 

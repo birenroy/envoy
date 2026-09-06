@@ -472,6 +472,32 @@ resources:
   EXPECT_EQ("1", cds_->versionInfo());
 }
 
+
+TEST_F(CdsApiImplTest, BatchClusterUpdatesOnCds) {
+  setup();
+
+  const std::string response_yaml = R"EOF(
+version_info: '1'
+resources:
+- "@type": type.googleapis.com/envoy.config.cluster.v3.Cluster
+  name: cluster_1
+- "@type": type.googleapis.com/envoy.config.cluster.v3.Cluster
+  name: cluster_2
+)EOF";
+  auto response =
+      TestUtility::parseYaml<envoy::service::discovery::v3::DiscoveryResponse>(response_yaml);
+  const auto decoded_resources =
+      TestUtility::decodeResources<envoy::config::cluster::v3::Cluster>(response);
+
+  EXPECT_CALL(cm_, createSourceBatch()).WillOnce(Return(nullptr));
+  expectAdd("cluster_1", "1");
+  expectAdd("cluster_2", "1");
+  EXPECT_CALL(initialized_, ready());
+
+  EXPECT_OK(cds_callbacks_->onConfigUpdate(decoded_resources.refvec_, response.version_info()));
+}
+
 } // namespace
 } // namespace Upstream
 } // namespace Envoy
+

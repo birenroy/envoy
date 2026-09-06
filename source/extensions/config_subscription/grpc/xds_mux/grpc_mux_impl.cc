@@ -65,6 +65,7 @@ GrpcMuxImpl<S, F, RQ, RS>::GrpcMuxImpl(std::unique_ptr<F> subscription_state_fac
       xds_config_tracker_(grpc_mux_context.xds_config_tracker_),
       xds_resources_delegate_(grpc_mux_context.xds_resources_delegate_),
       eds_resources_cache_(std::move(grpc_mux_context.eds_resources_cache_)),
+      cluster_manager_(grpc_mux_context.cluster_manager_),
       target_xds_authority_(grpc_mux_context.target_xds_authority_) {
   THROW_IF_NOT_OK(Config::Utility::checkLocalInfo("ads", grpc_mux_context.local_info_));
   AllMuxes::get().insert(this);
@@ -312,6 +313,12 @@ void GrpcMuxImpl<S, F, RQ, RS>::genericHandleResponse(const std::string& type_ur
       ENVOY_LOG(debug, "Receiving gRPC updates for {} from {}", response_proto.type_url(),
                 sub->second->controlPlaneIdentifier());
     }
+  }
+
+  Upstream::ClusterUpdateBatchPtr batch;
+  if (cluster_manager_.has_value() &&
+      type_url == Config::getTypeUrl<envoy::config::endpoint::v3::ClusterLoadAssignment>()) {
+    batch = cluster_manager_->createSourceBatch();
   }
 
   pausable_ack_queue_.push(sub->second->handleResponse(response_proto));

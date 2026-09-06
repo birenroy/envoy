@@ -409,7 +409,20 @@ public:
   void
   createNetworkObserverRegistries(Quic::EnvoyQuicNetworkObserverRegistryFactory& factory) override;
 
-  ClusterUpdateBatchPtr createSourceBatch() override { return nullptr; }
+  class ClusterUpdateBatchImpl : public ClusterUpdateBatch {
+  public:
+    ClusterUpdateBatchImpl(ClusterManagerImpl& parent) : parent_(parent) {
+      parent_.startBatch();
+    }
+    ~ClusterUpdateBatchImpl() override {
+      parent_.endBatch();
+    }
+
+  private:
+    ClusterManagerImpl& parent_;
+  };
+
+  ClusterUpdateBatchPtr createSourceBatch() override;
 
 protected:
   // ClusterManagerImpl's constructor should not be invoked directly; create instances from the
@@ -478,6 +491,27 @@ protected:
       std::shared_ptr<const ClusterInitializationObject>;
   using ClusterInitializationMap =
       absl::flat_hash_map<std::string, ClusterInitializationObjectConstSharedPtr>;
+
+  struct PendingThreadLocalAction {
+    enum class Type { Update, Removal };
+    Type type_{Type::Update};
+
+    ClusterInfoConstSharedPtr info_;
+    ThreadLocalClusterUpdateParams params_;
+    bool add_or_update_cluster_{false};
+    LoadBalancerFactorySharedPtr load_balancer_factory_;
+    HostMapConstSharedPtr host_map_;
+    ClusterInitializationObjectConstSharedPtr cluster_initialization_object_;
+    UnitFloat drop_overload_{0};
+    std::string drop_category_;
+    bool enable_batch_aware_update_{false};
+
+    std::string removal_cluster_name_;
+  };
+
+  void startBatch();
+  void endBatch();
+  void applyPendingThreadLocalUpdates();
 
   /**
    * An implementation of an on-demand CDS handle. It forwards the discovery request to the cluster
@@ -1027,6 +1061,8 @@ private:
 
   bool initialized_{};
   bool ads_mux_initialized_{};
+  uint32_t active_batches_{0};
+  std::vector<PendingThreadLocalAction> pending_thread_local_actions_;
   std::atomic<bool> shutdown_;
 
   // Keep all the ClusterMaps at the end, so that they get destroyed first.
