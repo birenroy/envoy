@@ -473,6 +473,8 @@ resources:
 }
 
 
+// Verifies that CdsApiHelper requests an RAII ClusterUpdateBatch from ClusterManager
+// when processing a CDS config update, batching all cluster additions/updates in the response.
 TEST_F(CdsApiImplTest, BatchClusterUpdatesOnCds) {
   setup();
 

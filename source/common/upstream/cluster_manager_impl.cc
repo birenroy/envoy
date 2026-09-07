@@ -375,6 +375,8 @@ void ClusterManagerImpl::startBatch() {
 void ClusterManagerImpl::endBatch() {
   ASSERT(active_batches_ > 0);
   active_batches_--;
+  // When all nested batches have completed, drain and dispatch all accumulated
+  // pending thread-local actions to worker threads.
   if (active_batches_ == 0) {
     applyPendingThreadLocalUpdates();
   }
@@ -384,6 +386,9 @@ void ClusterManagerImpl::applyPendingThreadLocalUpdates() {
   if (pending_thread_local_actions_.empty()) {
     return;
   }
+  // Move all queued actions into a shared vector so that a single tls_.runOnAllThreads(...)
+  // call can broadcast all updates/removals to all worker threads simultaneously,
+  // reducing cross-thread post overhead from O(K * M) to O(M).
   auto pending_actions = std::make_shared<std::vector<PendingThreadLocalAction>>(
       std::move(pending_thread_local_actions_));
   pending_thread_local_actions_.clear();
@@ -424,6 +429,8 @@ void ClusterManagerImpl::applyPendingThreadLocalUpdates() {
           cluster_manager->thread_local_deferred_clusters_[info->name()] =
               cluster_initialization_object;
 
+          // For deferred clusters, construct a command closure that will lazily
+          // initialize the cluster entry inline only when traffic first accesses it.
           ThreadLocalClusterCommand command = [&cluster_manager,
                                                cluster_name = info->name()]() -> ThreadLocalCluster& {
             auto existing_cluster_entry = cluster_manager->thread_local_clusters_.find(cluster_name);
@@ -434,6 +441,7 @@ void ClusterManagerImpl::applyPendingThreadLocalUpdates() {
             ASSERT(cluster_entry != nullptr, "Deferred clusters initiailization should not fail.");
             return *cluster_entry;
           };
+          // Notify registered callbacks that the cluster is available via deferred command.
           for (auto cb_it = cluster_manager->update_callbacks_.begin();
                cb_it != cluster_manager->update_callbacks_.end();) {
             auto curr_cb_it = cb_it;
@@ -449,6 +457,7 @@ void ClusterManagerImpl::applyPendingThreadLocalUpdates() {
               ENVOY_LOG(debug, "adding TLS cluster {}", info->name());
             }
 
+            // Eagerly instantiate the thread-local cluster entry on this worker.
             new_cluster = new ThreadLocalClusterManagerImpl::ClusterEntry(*cluster_manager, info,
                                                                           load_balancer_factory);
             cluster_manager->thread_local_clusters_[info->name()].reset(new_cluster);
@@ -461,6 +470,8 @@ void ClusterManagerImpl::applyPendingThreadLocalUpdates() {
             cluster_manager->thread_local_clusters_[info->name()]->setDropCategory(drop_category);
           }
           if (enable_batch_aware_update) {
+            // Apply all per-priority host updates simultaneously in a single call to updateHosts(),
+            // preventing multiple intermediate load balancer rebuilds.
             std::vector<std::reference_wrapper<const ThreadLocalClusterUpdateParams::PerPriority>>
                 updates;
             updates.reserve(params.per_priority_update_params_.size());
@@ -469,6 +480,7 @@ void ClusterManagerImpl::applyPendingThreadLocalUpdates() {
             }
             cluster_manager->thread_local_clusters_[info->name()]->updateHosts(updates, map);
           } else {
+            // Fallback path: update each priority sequentially when batch-aware update is disabled.
             for (const auto& per_priority : params.per_priority_update_params_) {
               cluster_manager->updateClusterMembership(
                   info->name(), per_priority.priority_, per_priority.update_hosts_params_,
@@ -479,6 +491,7 @@ void ClusterManagerImpl::applyPendingThreadLocalUpdates() {
           }
 
           if (new_cluster != nullptr) {
+            // Non-deferred cluster: notify registered callbacks with command returning the eager cluster.
             ThreadLocalClusterCommand command = [&new_cluster]() -> ThreadLocalCluster& {
               return *new_cluster;
             };
@@ -1009,6 +1022,8 @@ bool ClusterManagerImpl::removeCluster(absl::string_view cluster_name, const boo
     active_clusters_.erase(existing_active_cluster);
 
     ENVOY_LOG(debug, "removing cluster {}", cluster_name);
+    // When inside an active batch scope and the batching runtime flag is enabled,
+    // defer thread-local cluster removal by queueing it into pending_thread_local_actions_.
     if (active_batches_ > 0 &&
         Runtime::runtimeFeatureEnabled("envoy.reloadable_features.batch_cluster_updates")) {
       PendingThreadLocalAction action;
@@ -1016,6 +1031,7 @@ bool ClusterManagerImpl::removeCluster(absl::string_view cluster_name, const boo
       action.removal_cluster_name_ = std::string(cluster_name);
       pending_thread_local_actions_.push_back(std::move(action));
     } else {
+      // Fallback path: immediately broadcast cluster removal to all worker threads.
       tls_.runOnAllThreads([cluster_name = std::string(cluster_name)](
                                OptRef<ThreadLocalClusterManagerImpl> cluster_manager) {
         ASSERT(cluster_manager->thread_local_clusters_.contains(cluster_name) ||

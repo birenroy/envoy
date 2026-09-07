@@ -180,6 +180,9 @@ void NewGrpcMuxImpl::onDiscoveryResponse(
     }
   }
 
+  // For EDS (ClusterLoadAssignment) updates, create an RAII batch to coalesce all
+  // subsequent cluster endpoint thread-local updates and load balancer rebuilds into
+  // a single TLS dispatch upon response processing completion.
   Upstream::ClusterUpdateBatchPtr batch;
   if (cluster_manager_.has_value() &&
       message->type_url() ==

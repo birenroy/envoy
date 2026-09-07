@@ -412,6 +412,9 @@ void GrpcMuxImpl::onDiscoveryResponse(
   // see https://github.com/envoyproxy/envoy/issues/11477.
   same_type_resume = pause(type_url);
   TRY_ASSERT_MAIN_THREAD {
+    // When handling EDS (ClusterLoadAssignment) responses, create an RAII cluster update batch.
+    // This batches all thread-local cluster endpoint updates triggered during discovery response
+    // processing across worker threads into a single TLS dispatch when the batch goes out of scope.
     Upstream::ClusterUpdateBatchPtr batch;
     if (cluster_manager_.has_value() &&
         type_url == Config::getTypeUrl<envoy::config::endpoint::v3::ClusterLoadAssignment>()) {

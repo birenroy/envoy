@@ -315,6 +315,8 @@ void GrpcMuxImpl<S, F, RQ, RS>::genericHandleResponse(const std::string& type_ur
     }
   }
 
+  // Scopes an RAII cluster update batch during EDS (ClusterLoadAssignment) response processing
+  // to defer and coalesce worker thread-local endpoint updates across all clusters in the response.
   Upstream::ClusterUpdateBatchPtr batch;
   if (cluster_manager_.has_value() &&
       type_url == Config::getTypeUrl<envoy::config::endpoint::v3::ClusterLoadAssignment>()) {

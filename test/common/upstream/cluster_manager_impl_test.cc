@@ -2781,6 +2781,8 @@ TEST_F(ClusterManagerImplTest, LocalInterfaceNameForUpstreamConnectionThrowsInWi
 #endif
 
 
+// Verifies that dynamic cluster additions within an RAII batch successfully defer
+// and apply thread-local cluster creation upon batch destruction.
 TEST_F(ClusterManagerImplTest, BatchClusterUpdatesBasic) {
   const std::string yaml = R"EOF(
   static_resources:
@@ -2829,6 +2831,9 @@ TEST_F(ClusterManagerImplTest, BatchClusterUpdatesBasic) {
   EXPECT_NE(nullptr, cluster_manager_->getThreadLocalCluster("added_via_api"));
 }
 
+// Verifies that nested RAII batches properly increment and decrement the active batch
+// counter, ensuring that pending thread-local actions are only flushed when the outermost
+// batch exits its scope.
 TEST_F(ClusterManagerImplTest, BatchClusterUpdatesNested) {
   const std::string yaml = R"EOF(
   static_resources:
@@ -2881,6 +2886,8 @@ TEST_F(ClusterManagerImplTest, BatchClusterUpdatesNested) {
   EXPECT_NE(nullptr, cluster_manager_->getThreadLocalCluster("added_via_api"));
 }
 
+// Verifies that when the batching runtime feature flag is disabled, createSourceBatch()
+// returns nullptr and cluster additions fall back to immediate unbatched thread-local dispatch.
 TEST_F(ClusterManagerImplTest, BatchClusterUpdatesDisabledByRuntime) {
   TestScopedRuntime scoped_runtime;
   scoped_runtime.mergeValues(
@@ -2928,6 +2935,8 @@ TEST_F(ClusterManagerImplTest, BatchClusterUpdatesDisabledByRuntime) {
   EXPECT_NE(nullptr, cluster_manager_->getThreadLocalCluster("added_via_api"));
 }
 
+// Verifies that creating and destroying an RAII batch without any cluster modifications
+// is a safe no-op and does not disrupt existing thread-local clusters.
 TEST_F(ClusterManagerImplTest, BatchClusterUpdatesEmptyBatch) {
   const std::string yaml = R"EOF(
   static_resources:
@@ -2956,6 +2965,8 @@ TEST_F(ClusterManagerImplTest, BatchClusterUpdatesEmptyBatch) {
   EXPECT_NE(nullptr, cluster_manager_->getThreadLocalCluster("cluster_0"));
 }
 
+// Verifies that cluster removals performed within an active RAII batch defer thread-local
+// cluster destruction and update callback notifications until batch destruction.
 TEST_F(ClusterManagerImplTest, BatchClusterUpdatesRemoval) {
   const std::string yaml = R"EOF(
   static_resources:

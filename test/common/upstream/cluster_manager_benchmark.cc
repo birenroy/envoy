@@ -55,6 +55,18 @@ static std::unique_ptr<Thread::RealThreadsTestHelper> createRealThreadsHelper(ui
 /**
  * Multi-threaded benchmark fixture managing real worker threads and ThreadLocal::InstanceImpl
  * via Envoy's RealThreadsTestHelper.
+ *
+ * Simulates a realistic multi-worker Envoy server configuration where ClusterManagerImpl
+ * resides on the main dispatcher thread and propagates cluster updates across worker threads.
+ *
+ * Microbenchmarking Best Practices & Noise Reduction:
+ * - Build with optimizations: `-c opt --dynamic_mode=off`.
+ * - Disable Address Space Layout Randomization (ASLR) to eliminate code layout and alignment noise:
+ *     `setarch $(uname -m) -R <benchmark_binary>`
+ * - Use multiple repetitions and adequate runtime to ensure statistical stability:
+ *     `--benchmark_repetitions=10 --benchmark_min_time=2s`
+ * - To isolate cluster update and cross-thread dispatch latency from benchmark test data creation,
+ *   protobuf cluster and decoded resource generation is performed within `state.PauseTiming()` blocks.
  */
 class ClusterManagerBenchmarkFixture {
 public:
@@ -243,6 +255,13 @@ private:
 
 // --- Benchmark Functions ---
 
+/**
+ * Measures the latency of adding K new dynamic clusters via CDS onConfigUpdate across M worker threads.
+ *
+ * In unbatched mode, each cluster addition triggers an independent thread-local cluster allocation
+ * and priority set update across all M worker threads. In batched mode, all K additions are deferred
+ * and dispatched in a single batch TLS callback.
+ */
 static void BM_CdsClusterAddition(::benchmark::State& state, bool batching_enabled) {
   const uint32_t cluster_count = state.range(0);
   const uint32_t thread_count = state.range(1);
@@ -270,6 +289,12 @@ static void BM_CdsClusterAdditionUnbatched(::benchmark::State& state) {
   BM_CdsClusterAddition(state, false);
 }
 
+/**
+ * Measures the latency of modifying K existing dynamic clusters via CDS onConfigUpdate across M worker threads.
+ *
+ * Evaluates warming cluster state transition and member/priority updates. Batched mode coalesces
+ * thread-local cluster modifications and load balancer re-initializations into a single TLS dispatch.
+ */
 static void BM_CdsClusterUpdate(::benchmark::State& state, bool batching_enabled) {
   const uint32_t cluster_count = state.range(0);
   const uint32_t thread_count = state.range(1);
@@ -301,6 +326,13 @@ static void BM_CdsClusterUpdateUnbatched(::benchmark::State& state) {
   BM_CdsClusterUpdate(state, false);
 }
 
+/**
+ * Measures the latency of removing K active clusters via CDS onConfigUpdate across M worker threads.
+ *
+ * In unbatched mode, each cluster removal posts an independent TLS cleanup callback to all M workers.
+ * In batched mode, removals are accumulated in pending_thread_local_actions_ and drained in a single
+ * TLS callback upon batch completion.
+ */
 static void BM_CdsClusterRemoval(::benchmark::State& state, bool batching_enabled) {
   const uint32_t cluster_count = state.range(0);
   const uint32_t thread_count = state.range(1);
@@ -335,6 +367,12 @@ static void BM_CdsClusterRemovalUnbatched(::benchmark::State& state) {
   BM_CdsClusterRemoval(state, false);
 }
 
+/**
+ * Direct microbenchmark of raw ThreadLocal::Slot cross-thread dispatch latency.
+ *
+ * Measures the pure dispatch and event loop queueing overhead of K cross-thread actions across
+ * M worker threads without cluster manager or configuration parsing overhead.
+ */
 static void BM_DirectTlsDispatch(::benchmark::State& state, bool batched) {
   const uint32_t action_count = state.range(0);
   const uint32_t thread_count = state.range(1);
