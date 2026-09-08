@@ -45,7 +45,8 @@ using ::testing::NiceMock;
 using ::testing::Return;
 using ::testing::ReturnRef;
 
-static std::unique_ptr<Thread::RealThreadsTestHelper> createRealThreadsHelper(uint32_t num_threads) {
+static std::unique_ptr<Thread::RealThreadsTestHelper>
+createRealThreadsHelper(uint32_t num_threads) {
   if (!Event::Libevent::Global::initialized()) {
     Event::Libevent::Global::initialize();
   }
@@ -59,23 +60,22 @@ static std::unique_ptr<Thread::RealThreadsTestHelper> createRealThreadsHelper(ui
  * Simulates a realistic multi-worker Envoy server configuration where ClusterManagerImpl
  * resides on the main dispatcher thread and propagates cluster updates across worker threads.
  *
- * Microbenchmarking Best Practices & Noise Reduction:
+ * Benchmarking Best Practices & Noise Reduction:
  * - Build with optimizations: `-c opt --dynamic_mode=off`.
  * - Disable Address Space Layout Randomization (ASLR) to eliminate code layout and alignment noise:
  *     `setarch $(uname -m) -R <benchmark_binary>`
  * - Use multiple repetitions and adequate runtime to ensure statistical stability:
  *     `--benchmark_repetitions=10 --benchmark_min_time=2s`
  * - To isolate cluster update and cross-thread dispatch latency from benchmark test data creation,
- *   protobuf cluster and decoded resource generation is performed within `state.PauseTiming()` blocks.
+ *   protobuf cluster and decoded resource generation is performed within `state.PauseTiming()`
+ * blocks.
  */
 class ClusterManagerBenchmarkFixture {
 public:
   explicit ClusterManagerBenchmarkFixture(uint32_t num_threads, bool batching_enabled)
-      : num_threads_(num_threads),
-        real_threads_(createRealThreadsHelper(num_threads)) {
+      : num_threads_(num_threads), real_threads_(createRealThreadsHelper(num_threads)) {
     scoped_runtime_.mergeValues(
-        {{"envoy.reloadable_features.batch_cluster_updates",
-          batching_enabled ? "true" : "false"}});
+        {{"envoy.reloadable_features.batch_cluster_updates", batching_enabled ? "true" : "false"}});
 
     real_threads_->runOnMainBlocking([this]() {
       ON_CALL(server_context_, threadLocal()).WillByDefault(ReturnRef(real_threads_->tls()));
@@ -97,8 +97,7 @@ public:
       cm_ = TestClusterManagerImpl::createTestClusterManager(bootstrap, *factory_, server_context_);
       ON_CALL(server_context_, clusterManager()).WillByDefault(ReturnRef(*cm_));
       xds_manager_ = std::make_unique<NiceMock<Config::MockXdsManager>>();
-      cds_helper_ =
-          std::make_unique<CdsApiHelper>(*cm_, *xds_manager_, "benchmark_cds_helper");
+      cds_helper_ = std::make_unique<CdsApiHelper>(*cm_, *xds_manager_, "benchmark_cds_helper");
     });
   }
 
@@ -116,13 +115,9 @@ public:
     real_threads_->exitThreads();
   }
 
-  void runOnMainBlocking(std::function<void()> work) {
-    real_threads_->runOnMainBlocking(work);
-  }
+  void runOnMainBlocking(std::function<void()> work) { real_threads_->runOnMainBlocking(work); }
 
-  void drainAll() {
-    real_threads_->tlsBlock();
-  }
+  void drainAll() { real_threads_->tlsBlock(); }
 
   std::vector<envoy::config::cluster::v3::Cluster>
   createClusters(uint32_t count, const std::string& prefix = "bench_cluster_") {
@@ -134,8 +129,8 @@ public:
     return clusters;
   }
 
-  std::vector<envoy::config::cluster::v3::Cluster> createUpdatedClusters(
-      const std::vector<envoy::config::cluster::v3::Cluster>& base_clusters) {
+  std::vector<envoy::config::cluster::v3::Cluster>
+  createUpdatedClusters(const std::vector<envoy::config::cluster::v3::Cluster>& base_clusters) {
     std::vector<envoy::config::cluster::v3::Cluster> updated_clusters;
     updated_clusters.reserve(base_clusters.size());
     for (const auto& base : base_clusters) {
@@ -197,8 +192,7 @@ private:
 class DirectTlsBenchmarkFixture {
 public:
   explicit DirectTlsBenchmarkFixture(uint32_t num_threads)
-      : num_threads_(num_threads),
-        real_threads_(createRealThreadsHelper(num_threads)) {
+      : num_threads_(num_threads), real_threads_(createRealThreadsHelper(num_threads)) {
     real_threads_->runOnMainBlocking([this]() {
       slot_ = ThreadLocal::TypedSlot<ThreadState>::makeUnique(real_threads_->tls());
       slot_->set([](Event::Dispatcher&) -> std::shared_ptr<ThreadState> {
@@ -212,9 +206,7 @@ public:
   };
 
   ~DirectTlsBenchmarkFixture() {
-    real_threads_->runOnMainBlocking([this]() {
-      slot_.reset();
-    });
+    real_threads_->runOnMainBlocking([this]() { slot_.reset(); });
     real_threads_->shutdownThreading();
     real_threads_->exitThreads();
   }
@@ -256,11 +248,12 @@ private:
 // --- Benchmark Functions ---
 
 /**
- * Measures the latency of adding K new dynamic clusters via CDS onConfigUpdate across M worker threads.
+ * Measures the latency of adding K new dynamic clusters via CDS onConfigUpdate across M worker
+ * threads.
  *
  * In unbatched mode, each cluster addition triggers an independent thread-local cluster allocation
- * and priority set update across all M worker threads. In batched mode, all K additions are deferred
- * and dispatched in a single batch TLS callback.
+ * and priority set update across all M worker threads. In batched mode, all K additions are
+ * deferred and dispatched in a single batch TLS callback.
  */
 static void BM_CdsClusterAddition(::benchmark::State& state, bool batching_enabled) {
   const uint32_t cluster_count = state.range(0);
@@ -290,10 +283,12 @@ static void BM_CdsClusterAdditionUnbatched(::benchmark::State& state) {
 }
 
 /**
- * Measures the latency of modifying K existing dynamic clusters via CDS onConfigUpdate across M worker threads.
+ * Measures the latency of modifying K existing dynamic clusters via CDS onConfigUpdate across M
+ * worker threads.
  *
  * Evaluates warming cluster state transition and member/priority updates. Batched mode coalesces
- * thread-local cluster modifications and load balancer re-initializations into a single TLS dispatch.
+ * thread-local cluster modifications and load balancer reinitializations into a single TLS
+ * dispatch.
  */
 static void BM_CdsClusterUpdate(::benchmark::State& state, bool batching_enabled) {
   const uint32_t cluster_count = state.range(0);
@@ -327,11 +322,12 @@ static void BM_CdsClusterUpdateUnbatched(::benchmark::State& state) {
 }
 
 /**
- * Measures the latency of removing K active clusters via CDS onConfigUpdate across M worker threads.
+ * Measures the latency of removing K active clusters via CDS onConfigUpdate across M worker
+ * threads.
  *
- * In unbatched mode, each cluster removal posts an independent TLS cleanup callback to all M workers.
- * In batched mode, removals are accumulated in pending_thread_local_actions_ and drained in a single
- * TLS callback upon batch completion.
+ * In unbatched mode, each cluster removal posts an independent TLS cleanup callback to all M
+ * workers. In batched mode, removals are accumulated in pending_thread_local_actions_ and drained
+ * in a single TLS callback upon batch completion.
  */
 static void BM_CdsClusterRemoval(::benchmark::State& state, bool batching_enabled) {
   const uint32_t cluster_count = state.range(0);
@@ -368,7 +364,7 @@ static void BM_CdsClusterRemovalUnbatched(::benchmark::State& state) {
 }
 
 /**
- * Direct microbenchmark of raw ThreadLocal::Slot cross-thread dispatch latency.
+ * Direct benchmark of raw ThreadLocal::Slot cross-thread dispatch latency.
  *
  * Measures the pure dispatch and event loop queueing overhead of K cross-thread actions across
  * M worker threads without cluster manager or configuration parsing overhead.

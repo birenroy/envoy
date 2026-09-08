@@ -418,12 +418,8 @@ public:
    */
   class ClusterUpdateBatchImpl : public ClusterUpdateBatch {
   public:
-    ClusterUpdateBatchImpl(ClusterManagerImpl& parent) : parent_(parent) {
-      parent_.startBatch();
-    }
-    ~ClusterUpdateBatchImpl() override {
-      parent_.endBatch();
-    }
+    ClusterUpdateBatchImpl(ClusterManagerImpl& parent) : parent_(parent) { parent_.startBatch(); }
+    ~ClusterUpdateBatchImpl() override { parent_.endBatch(); }
 
   private:
     ClusterManagerImpl& parent_;
@@ -431,7 +427,7 @@ public:
 
   /**
    * Factory method to create an RAII cluster update batch.
-   * Returns a valid ClusterUpdateBatch if the 
+   * Returns a valid ClusterUpdateBatch if the
    * runtime feature flag is enabled, or nullptr if disabled.
    */
   ClusterUpdateBatchPtr createSourceBatch() override;
@@ -1094,8 +1090,8 @@ private:
   bool ads_mux_initialized_{};
   // Nesting counter of currently active RAII batch update scopes.
   uint32_t active_batches_{0};
-  // Queue of deferred thread-local cluster additions, updates, and removals to be dispatched in bulk
-  // when active_batches_ reaches 0.
+  // Queue of deferred thread-local cluster additions, updates, and removals to be dispatched in
+  // bulk when active_batches_ reaches 0.
   std::vector<PendingThreadLocalAction> pending_thread_local_actions_;
   std::atomic<bool> shutdown_;
 

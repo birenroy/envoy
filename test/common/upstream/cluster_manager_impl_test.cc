@@ -2780,7 +2780,6 @@ TEST_F(ClusterManagerImplTest, LocalInterfaceNameForUpstreamConnectionThrowsInWi
 }
 #endif
 
-
 // Verifies that dynamic cluster additions within an RAII batch successfully defer
 // and apply thread-local cluster creation upon batch destruction.
 TEST_F(ClusterManagerImplTest, BatchClusterUpdatesBasic) {
@@ -2890,8 +2889,7 @@ TEST_F(ClusterManagerImplTest, BatchClusterUpdatesNested) {
 // returns nullptr and cluster additions fall back to immediate unbatched thread-local dispatch.
 TEST_F(ClusterManagerImplTest, BatchClusterUpdatesDisabledByRuntime) {
   TestScopedRuntime scoped_runtime;
-  scoped_runtime.mergeValues(
-      {{"envoy.reloadable_features.batch_cluster_updates", "false"}});
+  scoped_runtime.mergeValues({{"envoy.reloadable_features.batch_cluster_updates", "false"}});
 
   const std::string yaml = R"EOF(
   static_resources:
@@ -3019,4 +3017,3 @@ TEST_F(ClusterManagerImplTest, BatchClusterUpdatesRemoval) {
 } // namespace
 } // namespace Upstream
 } // namespace Envoy
-

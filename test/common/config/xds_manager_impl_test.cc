@@ -42,8 +42,7 @@ public:
                std::unique_ptr<Config::CustomConfigValidators>&&, BackOffStrategyPtr&&,
                OptRef<Config::XdsConfigTracker>, OptRef<Config::XdsResourcesDelegate>,
                std::function<std::unique_ptr<Upstream::LoadStatsReporter>()>,
-               OptRef<Upstream::ClusterManager>)
-                -> std::shared_ptr<Config::GrpcMux> {
+               OptRef<Upstream::ClusterManager>) -> std::shared_ptr<Config::GrpcMux> {
               return std::make_shared<NiceMock<MockGrpcMux>>();
             }));
   }
@@ -195,8 +194,7 @@ TEST_P(XdsManagerImplTest, AdsReplacementPrimaryOnly) {
                             std::unique_ptr<Config::CustomConfigValidators>&&, BackOffStrategyPtr&&,
                             OptRef<Config::XdsConfigTracker>, OptRef<Config::XdsResourcesDelegate>,
                             std::function<std::unique_ptr<Upstream::LoadStatsReporter>()>,
-                            OptRef<Upstream::ClusterManager>)
-              -> std::shared_ptr<Config::GrpcMux> {
+                            OptRef<Upstream::ClusterManager>) -> std::shared_ptr<Config::GrpcMux> {
             EXPECT_NE(primary_async_client, nullptr);
             EXPECT_EQ(failover_async_client, nullptr);
             return ads_mux_shared;
@@ -288,8 +286,7 @@ TEST_P(XdsManagerImplTest, AdsReplacementPrimaryAndFailover) {
                             std::unique_ptr<Config::CustomConfigValidators>&&, BackOffStrategyPtr&&,
                             OptRef<Config::XdsConfigTracker>, OptRef<Config::XdsResourcesDelegate>,
                             std::function<std::unique_ptr<Upstream::LoadStatsReporter>()>,
-                            OptRef<Upstream::ClusterManager>)
-              -> std::shared_ptr<Config::GrpcMux> {
+                            OptRef<Upstream::ClusterManager>) -> std::shared_ptr<Config::GrpcMux> {
             EXPECT_NE(primary_async_client, nullptr);
             EXPECT_NE(failover_async_client, nullptr);
             return ads_mux_shared;
@@ -900,8 +897,7 @@ public:
                   std::unique_ptr<Config::CustomConfigValidators>&&, BackOffStrategyPtr&&,
                   OptRef<Config::XdsConfigTracker>, OptRef<Config::XdsResourcesDelegate>,
                   std::function<std::unique_ptr<Upstream::LoadStatsReporter>()>,
-                  OptRef<Upstream::ClusterManager>)
-                  -> std::shared_ptr<Config::GrpcMux> {
+                  OptRef<Upstream::ClusterManager>) -> std::shared_ptr<Config::GrpcMux> {
                 EXPECT_NE(primary_async_client, nullptr);
                 return authority_A_mux_;
               }));
@@ -916,8 +912,7 @@ public:
                   std::unique_ptr<Config::CustomConfigValidators>&&, BackOffStrategyPtr&&,
                   OptRef<Config::XdsConfigTracker>, OptRef<Config::XdsResourcesDelegate>,
                   std::function<std::unique_ptr<Upstream::LoadStatsReporter>()>,
-                  OptRef<Upstream::ClusterManager>)
-                  -> std::shared_ptr<Config::GrpcMux> {
+                  OptRef<Upstream::ClusterManager>) -> std::shared_ptr<Config::GrpcMux> {
                 EXPECT_NE(primary_async_client, nullptr);
                 return authority_B_mux_;
               }));
@@ -932,8 +927,7 @@ public:
                   std::unique_ptr<Config::CustomConfigValidators>&&, BackOffStrategyPtr&&,
                   OptRef<Config::XdsConfigTracker>, OptRef<Config::XdsResourcesDelegate>,
                   std::function<std::unique_ptr<Upstream::LoadStatsReporter>()>,
-                  OptRef<Upstream::ClusterManager>)
-                  -> std::shared_ptr<Config::GrpcMux> {
+                  OptRef<Upstream::ClusterManager>) -> std::shared_ptr<Config::GrpcMux> {
                 EXPECT_NE(primary_async_client, nullptr);
                 return default_mux_;
               }));
@@ -1265,8 +1259,7 @@ TEST_F(XdsManagerImplXdstpConfigSourcesTest, NonDefaultConfigSourceDeltaGrpc) {
                      std::unique_ptr<Config::CustomConfigValidators>&&, BackOffStrategyPtr&&,
                      OptRef<Config::XdsConfigTracker>, OptRef<Config::XdsResourcesDelegate>,
                      std::function<std::unique_ptr<Upstream::LoadStatsReporter>()>,
-                     OptRef<Upstream::ClusterManager>)
-                     -> std::shared_ptr<Config::GrpcMux> {
+                     OptRef<Upstream::ClusterManager>) -> std::shared_ptr<Config::GrpcMux> {
             EXPECT_NE(primary_async_client, nullptr);
             return authority_A_mux_;
           }));

@@ -472,7 +472,6 @@ resources:
   EXPECT_EQ("1", cds_->versionInfo());
 }
 
-
 // Verifies that CdsApiHelper requests an RAII ClusterUpdateBatch from ClusterManager
 // when processing a CDS config update, batching all cluster additions/updates in the response.
 TEST_F(CdsApiImplTest, BatchClusterUpdatesOnCds) {
@@ -502,4 +501,3 @@ resources:
 } // namespace
 } // namespace Upstream
 } // namespace Envoy
-
