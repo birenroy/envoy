@@ -240,7 +240,7 @@ XdsManagerImpl::initializeAdsConnections(const envoy::config::bootstrap::v3::Boo
                                  main_thread_dispatcher_, random_, *stats_.rootScope(),
                                  dyn_resources.ads_config(), local_info_,
                                  std::move(custom_config_validators), std::move(backoff_strategy),
-                                 xds_config_tracker, {}, lrs_factory);
+                                 xds_config_tracker, {}, lrs_factory, *cm_);
     } else {
       absl::Status status = Config::Utility::checkTransportVersion(dyn_resources.ads_config());
       RETURN_IF_NOT_OK(status);
@@ -274,7 +274,7 @@ XdsManagerImpl::initializeAdsConnections(const envoy::config::bootstrap::v3::Boo
                                  main_thread_dispatcher_, random_, *stats_.rootScope(),
                                  dyn_resources.ads_config(), local_info_,
                                  std::move(custom_config_validators), std::move(backoff_strategy),
-                                 xds_config_tracker, xds_resources_delegate, lrs_factory);
+                                 xds_config_tracker, xds_resources_delegate, lrs_factory, *cm_);
     }
   } else {
     ads_mux_ = std::make_unique<Config::NullGrpcMuxImpl>();

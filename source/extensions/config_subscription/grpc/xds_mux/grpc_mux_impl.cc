@@ -524,7 +524,7 @@ public:
          BackOffStrategyPtr&& backoff_strategy, XdsConfigTrackerOptRef xds_config_tracker,
          XdsResourcesDelegateOptRef,
          std::function<std::unique_ptr<Upstream::LoadStatsReporter>()> load_stats_reporter_factory,
-         OptRef<Upstream::ClusterManager> cluster_manager = absl::nullopt) override {
+         OptRef<Upstream::ClusterManager> cluster_manager) override {
     absl::StatusOr<RateLimitSettings> rate_limit_settings_or_error =
         Utility::parseRateLimitSettings(ads_config);
     THROW_IF_NOT_OK_REF(rate_limit_settings_or_error.status());
@@ -564,7 +564,7 @@ public:
          BackOffStrategyPtr&& backoff_strategy, XdsConfigTrackerOptRef xds_config_tracker,
          XdsResourcesDelegateOptRef,
          std::function<std::unique_ptr<Upstream::LoadStatsReporter>()> load_stats_reporter_factory,
-         OptRef<Upstream::ClusterManager> cluster_manager = absl::nullopt) override {
+         OptRef<Upstream::ClusterManager> cluster_manager) override {
     absl::StatusOr<RateLimitSettings> rate_limit_settings_or_error =
         Utility::parseRateLimitSettings(ads_config);
     THROW_IF_NOT_OK_REF(rate_limit_settings_or_error.status());
