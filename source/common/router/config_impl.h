@@ -506,30 +506,25 @@ using VirtualHostImplSharedPtr = std::shared_ptr<VirtualHostImpl>;
 using HeaderMutationsPtr = std::unique_ptr<Http::HeaderMutations>;
 
 /**
- * Encapsulates the configuration and factory context required to construct a VirtualHostImpl on-demand.
+ * Encapsulates the configuration and factory context required to construct a VirtualHostImpl
+ * on-demand.
  */
 struct VirtualHostInitializationObject {
-  VirtualHostInitializationObject(
-      const envoy::config::route::v3::VirtualHost& vhost_proto,
-      const CommonConfigSharedPtr& global_route_config,
-      Server::Configuration::ServerFactoryContext& factory_context,
-      Stats::ScopeSharedPtr vhost_stats_scope,
-      ProtobufMessage::ValidationVisitor& validator,
-      Init::Manager& init_manager,
-      bool validate_clusters)
-      : vhost_proto_(vhost_proto),
-        global_route_config_(global_route_config),
-        factory_context_(factory_context),
-        vhost_stats_scope_(std::move(vhost_stats_scope)),
-        validator_(validator),
-        init_manager_(init_manager),
-        validate_clusters_(validate_clusters) {}
+  VirtualHostInitializationObject(const envoy::config::route::v3::VirtualHost& vhost_proto,
+                                  const CommonConfigSharedPtr& global_route_config,
+                                  Server::Configuration::ServerFactoryContext& factory_context,
+                                  Stats::ScopeSharedPtr vhost_stats_scope,
+                                  ProtobufMessage::ValidationVisitor& validator,
+                                  Init::Manager& init_manager, bool validate_clusters)
+      : vhost_proto_(vhost_proto), global_route_config_(global_route_config),
+        factory_context_(factory_context), vhost_stats_scope_(std::move(vhost_stats_scope)),
+        validator_(validator), init_manager_(init_manager), validate_clusters_(validate_clusters) {}
 
   std::shared_ptr<const VirtualHostImpl> createVirtualHost() const {
     absl::Status creation_status = absl::OkStatus();
     auto vhost = std::make_shared<VirtualHostImpl>(
-        vhost_proto_, global_route_config_, factory_context_, *vhost_stats_scope_,
-        validator_, init_manager_, validate_clusters_, creation_status);
+        vhost_proto_, global_route_config_, factory_context_, *vhost_stats_scope_, validator_,
+        init_manager_, validate_clusters_, creation_status);
     if (!creation_status.ok()) {
       return nullptr;
     }
@@ -545,8 +540,7 @@ struct VirtualHostInitializationObject {
   const bool validate_clusters_;
 };
 
-using VirtualHostInitObjectConstSharedPtr =
-    std::shared_ptr<const VirtualHostInitializationObject>;
+using VirtualHostInitObjectConstSharedPtr = std::shared_ptr<const VirtualHostInitializationObject>;
 
 /**
  * Manages the transition between dormant VirtualHostInitializationObject and active VirtualHostImpl
@@ -554,20 +548,36 @@ using VirtualHostInitObjectConstSharedPtr =
  */
 class DomainEntry {
 public:
+  /**
+   * Constructs a DomainEntry for deferred virtual host creation using unparsed configuration.
+   * @param init_object the initialization object holding proto config and factory context.
+   */
   explicit DomainEntry(VirtualHostInitObjectConstSharedPtr init_object)
       : init_object_(std::move(init_object)) {}
-  explicit DomainEntry(VirtualHostImplSharedPtr eager_vhost)
-      : active_vhost_ref_(std::move(eager_vhost)),
-        active_vhost_(active_vhost_ref_.get()) {}
 
+  /**
+   * Constructs a DomainEntry for eager virtual host creation.
+   * @param eager_vhost the eagerly instantiated VirtualHostImpl shared pointer.
+   */
+  explicit DomainEntry(VirtualHostImplSharedPtr eager_vhost)
+      : active_vhost_ref_(std::move(eager_vhost)), active_vhost_(active_vhost_ref_.get()) {}
+
+  /**
+   * Returns the active VirtualHostImpl, instantiating and atomically publishing it via
+   * compare-and-swap if currently dormant. Updates the domain access timestamp for idle TTL
+   * eviction.
+   *
+   * @param time_source time source used to record the domain access timestamp.
+   * @return const VirtualHostImpl* pointer to the active virtual host, or nullptr if instantiation
+   * failed.
+   */
   const VirtualHostImpl* getOrCreateVirtualHost(TimeSource& time_source) const {
     const VirtualHostImpl* current = active_vhost_.load(std::memory_order_acquire);
     if (current != nullptr) {
-      last_access_timestamp_.store(
-          std::chrono::duration_cast<std::chrono::milliseconds>(
-              time_source.monotonicTime().time_since_epoch())
-              .count(),
-          std::memory_order_relaxed);
+      last_access_timestamp_.store(std::chrono::duration_cast<std::chrono::milliseconds>(
+                                       time_source.monotonicTime().time_since_epoch())
+                                       .count(),
+                                   std::memory_order_relaxed);
       return current;
     }
 
@@ -582,30 +592,40 @@ public:
 
     const VirtualHostImpl* new_vhost_ptr = new_vhost.get();
     const VirtualHostImpl* expected = nullptr;
-    if (active_vhost_.compare_exchange_strong(expected, new_vhost_ptr,
-                                              std::memory_order_acq_rel,
+    if (active_vhost_.compare_exchange_strong(expected, new_vhost_ptr, std::memory_order_acq_rel,
                                               std::memory_order_acquire)) {
       active_vhost_ref_ = std::move(new_vhost);
-      last_access_timestamp_.store(
-          std::chrono::duration_cast<std::chrono::milliseconds>(
-              time_source.monotonicTime().time_since_epoch())
-              .count(),
-          std::memory_order_relaxed);
+      last_access_timestamp_.store(std::chrono::duration_cast<std::chrono::milliseconds>(
+                                       time_source.monotonicTime().time_since_epoch())
+                                       .count(),
+                                   std::memory_order_relaxed);
       return new_vhost_ptr;
     }
 
-    last_access_timestamp_.store(
-        std::chrono::duration_cast<std::chrono::milliseconds>(
-            time_source.monotonicTime().time_since_epoch())
-            .count(),
-        std::memory_order_relaxed);
+    last_access_timestamp_.store(std::chrono::duration_cast<std::chrono::milliseconds>(
+                                     time_source.monotonicTime().time_since_epoch())
+                                     .count(),
+                                 std::memory_order_relaxed);
     return expected;
   }
 
+  /**
+   * Returns the active VirtualHostImpl pointer if already inflated, or nullptr if dormant.
+   * Does not instantiate dormant virtual hosts or update access timestamps.
+   */
   const VirtualHostImpl* activeVirtualHost() const {
     return active_vhost_.load(std::memory_order_acquire);
   }
 
+  /**
+   * Evicts the active virtual host if it is currently inflated, initialized via deferred creation,
+   * and the duration since its last access exceeds the idle TTL.
+   *
+   * @param current_time_ms current monotonic time in milliseconds.
+   * @param idle_ttl_ms idle duration threshold in milliseconds before an unaccessed host is
+   * evicted.
+   * @return bool true if the virtual host was evicted, false otherwise.
+   */
   bool evictIfIdle(uint64_t current_time_ms, uint64_t idle_ttl_ms) const {
     if (!init_object_) {
       return false;
@@ -617,8 +637,7 @@ public:
     uint64_t last_access = last_access_timestamp_.load(std::memory_order_relaxed);
     if (current_time_ms > last_access && (current_time_ms - last_access) >= idle_ttl_ms) {
       const VirtualHostImpl* expected = current;
-      if (active_vhost_.compare_exchange_strong(expected, nullptr,
-                                                std::memory_order_acq_rel,
+      if (active_vhost_.compare_exchange_strong(expected, nullptr, std::memory_order_acq_rel,
                                                 std::memory_order_acquire)) {
         active_vhost_ref_.reset();
         return true;
@@ -627,6 +646,10 @@ public:
     return false;
   }
 
+  /**
+   * Returns the initialization object associated with this domain entry, or nullptr for eager
+   * entries.
+   */
   VirtualHostInitObjectConstSharedPtr initObject() const { return init_object_; }
 
 private:

@@ -145,7 +145,7 @@ message Bootstrap {
   }
 
   message RouteManager {
-    // Enables In-Memory Route and Virtual Host Deferral (VIO).
+    // Enables In-Memory Route and Virtual Host Deferral (VirtualHost Initialization Objects).
     bool enable_deferred_virtual_host_creation = 1;
 
     // Maximum idle duration before an instantiated virtual host is reclaimed.

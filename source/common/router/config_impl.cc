@@ -2022,11 +2022,18 @@ RouteMatcher::RouteMatcher(const envoy::config::route::v3::RouteConfiguration& r
 }
 
 const DomainEntry* RouteMatcher::findDomainEntry(absl::string_view host_header_value) const {
+  // Fast path the case where we only have a default virtual host.
   if (exact_domain_entries_.empty() && wildcard_domain_suffixes_.empty() &&
       wildcard_domain_prefixes_.empty()) {
     return default_domain_entry_.get();
   }
 
+  // TODO (@rshriram) Match Origin header in WebSocket
+  // request with VHost, using wildcard match
+  // Lower-case the value of the host header, as hostnames are case insensitive. Hosts on the wire
+  // are overwhelmingly lower-case already (DNS names normalize to lower-case per RFC 3986 3.2.2),
+  // so scan first and only build a lower-cased copy when an upper-case byte is present. This keeps
+  // the common path allocation-free instead of always constructing a std::string.
   absl::string_view host = host_header_value;
   std::string lowercase_host;
   if (std::any_of(host_header_value.begin(), host_header_value.end(),
