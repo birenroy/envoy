@@ -424,6 +424,7 @@ void ClusterManagerImpl::applyPendingThreadLocalUpdates() {
                 !cluster_manager->thread_local_clusters_.contains(info->name()) &&
                 !Envoy::Thread::MainThread::isMainThread();
             defer_unused_clusters) {
+          ENVOY_LOG(debug, "Deferring add or update for TLS cluster {}", info->name());
           cluster_manager->thread_local_deferred_clusters_[info->name()] =
               cluster_initialization_object;
 
