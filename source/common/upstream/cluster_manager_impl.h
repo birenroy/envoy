@@ -1088,6 +1088,7 @@ private:
 
   bool initialized_{};
   bool ads_mux_initialized_{};
+  bool pending_start_ads_mux_{false};
   // Nesting counter of currently active RAII batch update scopes.
   uint32_t active_batches_{0};
   // Queue of deferred thread-local cluster additions, updates, and removals to be dispatched in

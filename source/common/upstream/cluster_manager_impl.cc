@@ -507,6 +507,15 @@ void ClusterManagerImpl::applyPendingThreadLocalUpdates() {
       }
     }
   });
+
+  // If ADS mux startup was deferred because an RAII batch update was active when the ADS
+  // cluster finished initializing, start it now that all accumulated thread-local cluster
+  // updates have been broadcast to main thread and worker thread-local cluster managers.
+  if (pending_start_ads_mux_ && !ads_mux_initialized_) {
+    xds_manager_.adsMux()->start();
+    ads_mux_initialized_ = true;
+    pending_start_ads_mux_ = false;
+  }
 }
 
 absl::Status
@@ -628,6 +637,11 @@ ClusterManagerImpl::initialize(const envoy::config::bootstrap::v3::Bootstrap& bo
   for (auto& cluster : active_clusters_) {
     init_helper_.addCluster(*cluster.second);
   }
+
+  // End the bootstrap batch scope before secondary cluster and static load completion,
+  // ensuring all primary static clusters are flushed to thread-local storage before secondary
+  // initializations (e.g., LRS async client setup) and ADS stream connections begin.
+  batch.reset();
 
   // Potentially move to secondary initialization on the static bootstrap clusters if all primary
   // clusters have already initialized. (E.g., if all static).
@@ -1548,8 +1562,13 @@ void ClusterManagerImpl::postThreadLocalClusterUpdate(ClusterManagerCluster& cm_
   // By this time, the main thread has received the cluster initialization update, so we can start
   // the ADS mux if the ADS mux is dependent on this cluster's initialization.
   if (cm_cluster.requiredForAds() && !ads_mux_initialized_) {
-    xds_manager_.adsMux()->start();
-    ads_mux_initialized_ = true;
+    if (active_batches_ > 0 &&
+        Runtime::runtimeFeatureEnabled("envoy.reloadable_features.batch_cluster_updates")) {
+      pending_start_ads_mux_ = true;
+    } else {
+      xds_manager_.adsMux()->start();
+      ads_mux_initialized_ = true;
+    }
   }
 }
 
