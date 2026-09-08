@@ -590,6 +590,17 @@ public:
       return nullptr;
     }
 
+    // Uses a lock-free Compare-And-Swap (CAS) to publish the newly constructed VirtualHostImpl.
+    // - Fast path: `active_vhost_.load(std::memory_order_acquire)` allows concurrent worker threads
+    //   to read the active virtual host without mutexes or event loop contention.
+    // - Publication: `compare_exchange_strong` with `std::memory_order_acq_rel` guarantees that the
+    //   complete VirtualHostImpl initialization by the winning thread is visible to all threads
+    //   before the pointer is published.
+    // - Race resolution: If multiple worker threads compile the same dormant host concurrently,
+    // exactly
+    //   one succeeds the CAS and stores the lifetime-managing `active_vhost_ref_`. Losing threads
+    //   safely drop their redundant local allocation and return the winner's pointer loaded into
+    //   `expected`.
     const VirtualHostImpl* new_vhost_ptr = new_vhost.get();
     const VirtualHostImpl* expected = nullptr;
     if (active_vhost_.compare_exchange_strong(expected, new_vhost_ptr, std::memory_order_acq_rel,
@@ -1477,9 +1488,27 @@ public:
   const VirtualHostImpl* findVirtualHost(const Http::RequestHeaderMap& headers) const;
 
   /**
+   * Periodically called to evict idle virtual hosts that have exceeded the idle TTL, inspecting up
+   * to max_entries starting from cursor to bound main thread execution time.
+   *
+   * @param current_time_ms current monotonic time in milliseconds.
+   * @param idle_ttl_ms idle duration threshold in milliseconds.
+   * @param max_entries maximum number of domain entries to inspect in this iteration.
+   * @param cursor in-out cursor tracking the linear index in all_domain_entries_.
+   * @return size_t number of virtual hosts evicted in this chunk.
+   */
+  size_t evictIdleVirtualHosts(uint64_t current_time_ms, uint64_t idle_ttl_ms, size_t max_entries,
+                               size_t& cursor) const;
+
+  /**
    * Periodically called to evict idle virtual hosts that have exceeded the idle TTL.
    */
   size_t evictIdleVirtualHosts(uint64_t current_time_ms, uint64_t idle_ttl_ms) const;
+
+  /**
+   * Returns the total number of registered domain entries in this route matcher.
+   */
+  size_t totalDomainEntries() const { return all_domain_entries_.size(); }
 
 private:
   RouteMatcher(const envoy::config::route::v3::RouteConfiguration& config,
@@ -1634,6 +1663,38 @@ public:
   }
   const Envoy::Config::TypedMetadata& typedMetadata() const override {
     return shared_config_->typedMetadata();
+  }
+
+  /**
+   * Periodically called to evict idle virtual hosts that have exceeded the idle TTL, inspecting up
+   * to max_entries starting from cursor to bound main thread execution time.
+   */
+  size_t evictIdleVirtualHosts(uint64_t current_time_ms, uint64_t idle_ttl_ms, size_t max_entries,
+                               size_t& cursor) const {
+    if (route_matcher_ == nullptr) {
+      return 0;
+    }
+    return route_matcher_->evictIdleVirtualHosts(current_time_ms, idle_ttl_ms, max_entries, cursor);
+  }
+
+  /**
+   * Periodically called to evict idle virtual hosts that have exceeded the idle TTL.
+   */
+  size_t evictIdleVirtualHosts(uint64_t current_time_ms, uint64_t idle_ttl_ms) const {
+    if (route_matcher_ == nullptr) {
+      return 0;
+    }
+    return route_matcher_->evictIdleVirtualHosts(current_time_ms, idle_ttl_ms);
+  }
+
+  /**
+   * Returns the total number of registered domain entries in this route configuration.
+   */
+  size_t totalDomainEntries() const {
+    if (route_matcher_ == nullptr) {
+      return 0;
+    }
+    return route_matcher_->totalDomainEntries();
   }
 
 protected:

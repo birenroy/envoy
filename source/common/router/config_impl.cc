@@ -2097,14 +2097,31 @@ const VirtualHostImpl* RouteMatcher::findVirtualHost(const Http::RequestHeaderMa
   return entry->getOrCreateVirtualHost(time_source_);
 }
 
-size_t RouteMatcher::evictIdleVirtualHosts(uint64_t current_time_ms, uint64_t idle_ttl_ms) const {
+size_t RouteMatcher::evictIdleVirtualHosts(uint64_t current_time_ms, uint64_t idle_ttl_ms,
+                                           size_t max_entries, size_t& cursor) const {
+  if (all_domain_entries_.empty() || max_entries == 0) {
+    return 0;
+  }
+  const size_t total = all_domain_entries_.size();
+  if (cursor >= total) {
+    cursor = 0;
+  }
   size_t evicted_count = 0;
-  for (const auto& entry : all_domain_entries_) {
+  const size_t inspect_count = std::min(max_entries, total);
+  for (size_t i = 0; i < inspect_count; ++i) {
+    const size_t idx = (cursor + i) % total;
+    const auto& entry = all_domain_entries_[idx];
     if (entry && entry->evictIfIdle(current_time_ms, idle_ttl_ms)) {
       ++evicted_count;
     }
   }
+  cursor = (cursor + inspect_count) % total;
   return evicted_count;
+}
+
+size_t RouteMatcher::evictIdleVirtualHosts(uint64_t current_time_ms, uint64_t idle_ttl_ms) const {
+  size_t cursor = 0;
+  return evictIdleVirtualHosts(current_time_ms, idle_ttl_ms, all_domain_entries_.size(), cursor);
 }
 
 VirtualHostRoute RouteMatcher::route(const RouteCallback& cb, const Http::RequestHeaderMap& headers,

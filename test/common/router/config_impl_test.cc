@@ -13194,6 +13194,71 @@ virtual_hosts:
   EXPECT_EQ("evictable_cluster", route2->routeEntry()->clusterName());
 }
 
+TEST_F(RouteMatcherTest, DeferredVirtualHostWorkBudgetedIdleEviction) {
+  TestScopedRuntime scoped_runtime;
+  scoped_runtime.mergeValues(
+      {{"envoy.reloadable_features.deferred_virtual_host_creation", "true"}});
+
+  const std::string yaml = R"EOF(
+virtual_hosts:
+- name: vhost1
+  domains: ["vhost1.example.com"]
+  routes:
+  - match: { prefix: "/" }
+    route: { cluster: "cluster1" }
+- name: vhost2
+  domains: ["vhost2.example.com"]
+  routes:
+  - match: { prefix: "/" }
+    route: { cluster: "cluster2" }
+- name: vhost3
+  domains: ["vhost3.example.com"]
+  routes:
+  - match: { prefix: "/" }
+    route: { cluster: "cluster3" }
+- name: vhost4
+  domains: ["vhost4.example.com"]
+  routes:
+  - match: { prefix: "/" }
+    route: { cluster: "cluster4" }
+)EOF";
+
+  factory_context_.cluster_manager_.initializeClusters(
+      {"cluster1", "cluster2", "cluster3", "cluster4"}, {});
+  TestConfigImpl config(parseRouteConfigurationFromYaml(yaml), factory_context_, true,
+                        creation_status_);
+  EXPECT_OK(creation_status_);
+  EXPECT_EQ(4, config.totalDomainEntries());
+
+  // 1. Inflate all 4 virtual hosts
+  Http::TestRequestHeaderMapImpl h1 = genHeaders("vhost1.example.com", "/", "GET");
+  Http::TestRequestHeaderMapImpl h2 = genHeaders("vhost2.example.com", "/", "GET");
+  Http::TestRequestHeaderMapImpl h3 = genHeaders("vhost3.example.com", "/", "GET");
+  Http::TestRequestHeaderMapImpl h4 = genHeaders("vhost4.example.com", "/", "GET");
+  EXPECT_NE(nullptr, config.route(h1, 0));
+  EXPECT_NE(nullptr, config.route(h2, 0));
+  EXPECT_NE(nullptr, config.route(h3, 0));
+  EXPECT_NE(nullptr, config.route(h4, 0));
+
+  // 2. Budgeted sweep: inspect 2 entries at a time with cursor
+  size_t cursor = 0;
+  // Sweep chunk 1 (inspect entries 0 and 1, max_entries = 2)
+  size_t evicted_chunk1 = config.evictIdleVirtualHosts(5000, 1000, 2, cursor);
+  EXPECT_EQ(2, evicted_chunk1);
+  EXPECT_EQ(2, cursor);
+
+  // Sweep chunk 2 (inspect entries 2 and 3, max_entries = 2)
+  size_t evicted_chunk2 = config.evictIdleVirtualHosts(5000, 1000, 2, cursor);
+  EXPECT_EQ(2, evicted_chunk2);
+  EXPECT_EQ(0, cursor); // Cursor wrapped back to 0
+
+  // 3. Transparently re-inflate all hosts on subsequent traffic
+  EXPECT_NE(nullptr, config.route(h1, 0));
+  EXPECT_NE(nullptr, config.route(h2, 0));
+  EXPECT_NE(nullptr, config.route(h3, 0));
+  EXPECT_NE(nullptr, config.route(h4, 0));
+}
+
 } // namespace
 } // namespace Router
 } // namespace Envoy
