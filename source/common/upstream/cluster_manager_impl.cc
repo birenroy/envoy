@@ -640,7 +640,7 @@ ClusterManagerImpl::initialize(const envoy::config::bootstrap::v3::Bootstrap& bo
 
   // End the bootstrap batch scope before secondary cluster and static load completion,
   // ensuring all primary static clusters are flushed to thread-local storage before secondary
-  // initializations (e.g., LRS async client setup) and ADS stream connections begin.
+  // initialization (e.g., LRS async client setup) and ADS stream connections begin.
   batch.reset();
 
   // Potentially move to secondary initialization on the static bootstrap clusters if all primary
