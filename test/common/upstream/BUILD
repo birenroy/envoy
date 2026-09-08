@@ -169,6 +169,8 @@ envoy_cc_test(
         "//test/mocks/matcher:matcher_mocks",
         "//test/mocks/protobuf:protobuf_mocks",
         "//test/mocks/upstream:cluster_priority_set_mocks",
+        "//test/mocks/upstream:cluster_update_callbacks_handle_mocks",
+        "//test/mocks/upstream:cluster_update_callbacks_mocks",
         "//test/mocks/upstream:load_balancer_context_mock",
         "//test/mocks/upstream:thread_aware_load_balancer_mocks",
         "//test/test_common:status_utility_lib",

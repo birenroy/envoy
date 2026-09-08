@@ -498,6 +498,86 @@ resources:
   EXPECT_OK(cds_callbacks_->onConfigUpdate(decoded_resources.refvec_, response.version_info()));
 }
 
+// Verifies that CdsApiHelper correctly records rejection error messages when addOrUpdateCluster
+// fails or when duplicate clusters are present in the update response, all within a batch scope.
+TEST_F(CdsApiImplTest, CdsApiHelperRejectionReportingAndDuplicateHandling) {
+  setup();
+
+  const std::string response_yaml = R"EOF(
+version_info: '1'
+resources:
+- "@type": type.googleapis.com/envoy.config.cluster.v3.Cluster
+  name: duplicate_cluster
+- "@type": type.googleapis.com/envoy.config.cluster.v3.Cluster
+  name: duplicate_cluster
+- "@type": type.googleapis.com/envoy.config.cluster.v3.Cluster
+  name: failing_cluster
+)EOF";
+  auto response =
+      TestUtility::parseYaml<envoy::service::discovery::v3::DiscoveryResponse>(response_yaml);
+  const auto decoded_resources =
+      TestUtility::decodeResources<envoy::config::cluster::v3::Cluster>(response);
+
+  EXPECT_CALL(cm_, createSourceBatch()).WillOnce(Return(nullptr));
+  expectAdd("duplicate_cluster", "1");
+  EXPECT_CALL(cm_, addOrUpdateCluster(WithName("failing_cluster"), "1", false))
+      .WillOnce(Return(absl::InvalidArgumentError("invalid cluster config")));
+
+  EXPECT_CALL(initialized_, ready());
+
+  const auto status =
+      cds_callbacks_->onConfigUpdate(decoded_resources.refvec_, response.version_info());
+  EXPECT_THAT(status, StatusHelpers::StatusCodeIs(absl::StatusCode::kInvalidArgument));
+  EXPECT_THAT(status.message(),
+              testing::HasSubstr("duplicate cluster duplicate_cluster found"));
+  EXPECT_THAT(status.message(), testing::HasSubstr("failing_cluster: invalid cluster config"));
+}
+
+// Verifies that CDS updates properly batch interleaved additions, updates, and removals
+// under an RAII batch scope.
+TEST_F(CdsApiImplTest, BatchInterleavedAddUpdateRemove) {
+  setup();
+
+  // First establish an active cluster to remove in the subsequent update.
+  const std::string response1_yaml = R"EOF(
+version_info: '1'
+resources:
+- "@type": type.googleapis.com/envoy.config.cluster.v3.Cluster
+  name: cluster_to_remove
+)EOF";
+  auto response1 =
+      TestUtility::parseYaml<envoy::service::discovery::v3::DiscoveryResponse>(response1_yaml);
+  const auto decoded_resources1 =
+      TestUtility::decodeResources<envoy::config::cluster::v3::Cluster>(response1);
+
+  EXPECT_CALL(cm_, clusters()).WillOnce(Return(makeClusterInfoMaps({})));
+  EXPECT_CALL(cm_, createSourceBatch()).WillOnce(Return(nullptr));
+  expectAdd("cluster_to_remove", "1");
+  EXPECT_CALL(initialized_, ready());
+
+  EXPECT_OK(cds_callbacks_->onConfigUpdate(decoded_resources1.refvec_, response1.version_info()));
+
+  // Second update: simultaneously add cluster_new and remove cluster_to_remove.
+  const std::string response2_yaml = R"EOF(
+version_info: '2'
+resources:
+- "@type": type.googleapis.com/envoy.config.cluster.v3.Cluster
+  name: cluster_new
+)EOF";
+  auto response2 =
+      TestUtility::parseYaml<envoy::service::discovery::v3::DiscoveryResponse>(response2_yaml);
+  const auto decoded_resources2 =
+      TestUtility::decodeResources<envoy::config::cluster::v3::Cluster>(response2);
+
+  EXPECT_CALL(cm_, clusters()).WillOnce(Return(makeClusterInfoMaps({"cluster_to_remove"})));
+  EXPECT_CALL(cm_, createSourceBatch()).WillOnce(Return(nullptr));
+  expectAdd("cluster_new", "2");
+  EXPECT_CALL(cm_, removeCluster(StrEq("cluster_to_remove"), false)).WillOnce(Return(true));
+
+  EXPECT_OK(cds_callbacks_->onConfigUpdate(decoded_resources2.refvec_, response2.version_info()));
+  EXPECT_EQ("2", cds_->versionInfo());
+}
+
 } // namespace
 } // namespace Upstream
 } // namespace Envoy

@@ -22,6 +22,8 @@
 #include "test/mocks/network/mocks.h"
 #include "test/mocks/server/instance.h"
 #include "test/mocks/upstream/cluster_priority_set.h"
+#include "test/mocks/upstream/cluster_update_callbacks.h"
+#include "test/mocks/upstream/cluster_update_callbacks_handle.h"
 #include "test/mocks/upstream/load_balancer_context.h"
 #include "test/mocks/upstream/thread_aware_load_balancer.h"
 #include "test/test_common/status_utility.h"
@@ -3012,6 +3014,577 @@ TEST_F(ClusterManagerImplTest, BatchClusterUpdatesRemoval) {
   }
 
   EXPECT_EQ(nullptr, cluster_manager_->getThreadLocalCluster("added_via_api"));
+}
+
+// Verifies that multiple deeply nested empty batch scopes properly track active batch counts
+// and return early without scheduling unnecessary thread-local dispatches.
+TEST_F(ClusterManagerImplTest, BatchClusterUpdatesDeeplyNestedEmptyBatches) {
+  const std::string yaml = R"EOF(
+  static_resources:
+    clusters:
+    - name: cluster_1
+      connect_timeout: 0.250s
+      type: STATIC
+      lb_policy: ROUND_ROBIN
+      load_assignment:
+        cluster_name: cluster_1
+        endpoints:
+        - lb_endpoints:
+          - endpoint:
+              address:
+                socket_address:
+                  address: 127.0.0.1
+                  port_value: 11000
+  )EOF";
+  create(parseBootstrapFromV3Yaml(yaml));
+
+  // Nest 4 levels of empty batches.
+  {
+    auto b1 = cluster_manager_->createSourceBatch();
+    EXPECT_NE(nullptr, b1);
+    {
+      auto b2 = cluster_manager_->createSourceBatch();
+      EXPECT_NE(nullptr, b2);
+      {
+        auto b3 = cluster_manager_->createSourceBatch();
+        EXPECT_NE(nullptr, b3);
+        {
+          auto b4 = cluster_manager_->createSourceBatch();
+          EXPECT_NE(nullptr, b4);
+        }
+      }
+    }
+  }
+
+  // Active clusters should remain untouched and accessible.
+  EXPECT_TRUE(cluster_manager_->hasCluster("cluster_1"));
+  EXPECT_NE(nullptr, cluster_manager_->getThreadLocalCluster("cluster_1"));
+}
+
+// Verifies that ADS mux startup is deferred when primary clusters are initialized in a batch
+// and starts immediately upon outermost batch destruction.
+TEST_F(ClusterManagerImplTest, BatchClusterUpdatesDeferredAdsMuxStartup) {
+  std::shared_ptr<NiceMock<Config::MockGrpcMux>> ads_mux =
+      std::make_shared<NiceMock<Config::MockGrpcMux>>();
+  ON_CALL(factory_.server_context_.xds_manager_, adsMux()).WillByDefault(Return(ads_mux));
+
+  const std::string yaml = R"EOF(
+  dynamic_resources:
+    ads_config:
+      api_type: GRPC
+      transport_api_version: V3
+      grpc_services:
+      - envoy_grpc:
+          cluster_name: ads_cluster
+  static_resources:
+    clusters:
+    - name: cluster_0
+      connect_timeout: 0.250s
+      type: STATIC
+      lb_policy: ROUND_ROBIN
+      load_assignment:
+        cluster_name: cluster_0
+        endpoints:
+        - lb_endpoints:
+          - endpoint:
+              address:
+                socket_address:
+                  address: 127.0.0.1
+                  port_value: 11000
+    - name: ads_cluster
+      connect_timeout: 0.250s
+      type: STATIC
+      lb_policy: ROUND_ROBIN
+      load_assignment:
+        cluster_name: ads_cluster
+        endpoints:
+        - lb_endpoints:
+          - endpoint:
+              address:
+                socket_address:
+                  address: 127.0.0.1
+                  port_value: 11001
+  )EOF";
+
+  EXPECT_CALL(*ads_mux, start());
+  create(parseBootstrapFromV3Yaml(yaml));
+
+  EXPECT_TRUE(cluster_manager_->hasCluster("cluster_0"));
+  EXPECT_TRUE(cluster_manager_->hasCluster("ads_cluster"));
+  EXPECT_NE(nullptr, cluster_manager_->getThreadLocalCluster("cluster_0"));
+  EXPECT_NE(nullptr, cluster_manager_->getThreadLocalCluster("ads_cluster"));
+}
+
+// Verifies that when the batch cluster updates runtime feature flag is disabled,
+// cluster additions and removals bypass batch queuing and dispatch to worker threads immediately.
+TEST_F(ClusterManagerImplTest, BatchClusterUpdatesDisabledRemoval) {
+  TestScopedRuntime scoped_runtime;
+  scoped_runtime.mergeValues({{"envoy.reloadable_features.batch_cluster_updates", "false"}});
+
+  const std::string yaml = R"EOF(
+  static_resources:
+    clusters:
+    - name: cluster_1
+      connect_timeout: 0.250s
+      type: STATIC
+      lb_policy: ROUND_ROBIN
+      load_assignment:
+        cluster_name: cluster_1
+        endpoints:
+        - lb_endpoints:
+          - endpoint:
+              address:
+                socket_address:
+                  address: 127.0.0.1
+                  port_value: 11000
+  )EOF";
+  create(parseBootstrapFromV3Yaml(yaml));
+
+  // createSourceBatch() should return nullptr when feature flag is false.
+  auto batch = cluster_manager_->createSourceBatch();
+  EXPECT_EQ(nullptr, batch);
+
+  const std::string added_yaml = R"EOF(
+    name: immediate_cluster
+    connect_timeout: 0.250s
+    type: STATIC
+    lb_policy: ROUND_ROBIN
+    load_assignment:
+      cluster_name: immediate_cluster
+      endpoints:
+      - lb_endpoints:
+        - endpoint:
+            address:
+              socket_address:
+                address: 127.0.0.1
+                port_value: 11002
+  )EOF";
+  auto cluster = parseClusterFromV3Yaml(added_yaml);
+  EXPECT_TRUE(*cluster_manager_->addOrUpdateCluster(cluster, "v1", true));
+  EXPECT_NE(nullptr, cluster_manager_->getThreadLocalCluster("immediate_cluster"));
+
+  EXPECT_TRUE(cluster_manager_->removeCluster("immediate_cluster", true));
+  EXPECT_EQ(nullptr, cluster_manager_->getThreadLocalCluster("immediate_cluster"));
+}
+
+// Verifies that adding and removing the same cluster within a single batch correctly
+// processes both actions in order without stale worker thread state.
+TEST_F(ClusterManagerImplTest, BatchClusterUpdatesInterleavedAddAndRemoveSameCluster) {
+  const std::string yaml = R"EOF(
+  static_resources:
+    clusters:
+    - name: cluster_1
+      connect_timeout: 0.250s
+      type: STATIC
+      lb_policy: ROUND_ROBIN
+      load_assignment:
+        cluster_name: cluster_1
+        endpoints:
+        - lb_endpoints:
+          - endpoint:
+              address:
+                socket_address:
+                  address: 127.0.0.1
+                  port_value: 11000
+  )EOF";
+  create(parseBootstrapFromV3Yaml(yaml));
+
+  const std::string ephemeral_yaml = R"EOF(
+    name: ephemeral_cluster
+    connect_timeout: 0.250s
+    type: STATIC
+    lb_policy: ROUND_ROBIN
+    load_assignment:
+      cluster_name: ephemeral_cluster
+      endpoints:
+      - lb_endpoints:
+        - endpoint:
+            address:
+              socket_address:
+                address: 127.0.0.1
+                port_value: 11003
+  )EOF";
+
+  {
+    auto batch = cluster_manager_->createSourceBatch();
+    EXPECT_NE(nullptr, batch);
+
+    auto cluster = parseClusterFromV3Yaml(ephemeral_yaml);
+    EXPECT_TRUE(*cluster_manager_->addOrUpdateCluster(cluster, "v1", true));
+    EXPECT_TRUE(cluster_manager_->hasCluster("ephemeral_cluster"));
+
+    EXPECT_TRUE(cluster_manager_->removeCluster("ephemeral_cluster", true));
+    EXPECT_FALSE(cluster_manager_->hasCluster("ephemeral_cluster"));
+  }
+
+  EXPECT_EQ(nullptr, cluster_manager_->getThreadLocalCluster("ephemeral_cluster"));
+}
+
+// Verifies that removing and subsequently re-adding a cluster in the same batch
+// leaves the cluster active and healthy on thread-local instances.
+TEST_F(ClusterManagerImplTest, BatchClusterUpdatesRemoveAndReAddSameCluster) {
+  const std::string yaml = R"EOF(
+  static_resources:
+    clusters:
+    - name: cluster_0
+      connect_timeout: 0.250s
+      type: STATIC
+      lb_policy: ROUND_ROBIN
+      load_assignment:
+        cluster_name: cluster_0
+        endpoints:
+        - lb_endpoints:
+          - endpoint:
+              address:
+                socket_address:
+                  address: 127.0.0.1
+                  port_value: 11000
+  )EOF";
+  create(parseBootstrapFromV3Yaml(yaml));
+
+  const std::string init_cluster_yaml = R"EOF(
+    name: readd_cluster
+    connect_timeout: 0.250s
+    type: STATIC
+    lb_policy: ROUND_ROBIN
+    load_assignment:
+      cluster_name: readd_cluster
+      endpoints:
+      - lb_endpoints:
+        - endpoint:
+            address:
+              socket_address:
+                address: 127.0.0.1
+                port_value: 11000
+  )EOF";
+  EXPECT_TRUE(*cluster_manager_->addOrUpdateCluster(parseClusterFromV3Yaml(init_cluster_yaml), "v1", true));
+  EXPECT_TRUE(cluster_manager_->hasCluster("readd_cluster"));
+  EXPECT_NE(nullptr, cluster_manager_->getThreadLocalCluster("readd_cluster"));
+
+  const std::string new_config_yaml = R"EOF(
+    name: readd_cluster
+    connect_timeout: 0.500s
+    type: STATIC
+    lb_policy: ROUND_ROBIN
+    load_assignment:
+      cluster_name: readd_cluster
+      endpoints:
+      - lb_endpoints:
+        - endpoint:
+            address:
+              socket_address:
+                address: 127.0.0.1
+                port_value: 11004
+  )EOF";
+
+  {
+    auto batch = cluster_manager_->createSourceBatch();
+    EXPECT_NE(nullptr, batch);
+
+    EXPECT_TRUE(cluster_manager_->removeCluster("readd_cluster", true));
+    EXPECT_FALSE(cluster_manager_->hasCluster("readd_cluster"));
+
+    auto cluster = parseClusterFromV3Yaml(new_config_yaml);
+    EXPECT_TRUE(*cluster_manager_->addOrUpdateCluster(cluster, "v2", true));
+    EXPECT_TRUE(cluster_manager_->hasCluster("readd_cluster"));
+  }
+
+  EXPECT_TRUE(cluster_manager_->hasCluster("readd_cluster"));
+  EXPECT_NE(nullptr, cluster_manager_->getThreadLocalCluster("readd_cluster"));
+}
+
+// Verifies that batches containing multiple cluster additions, updates, and removals across
+// multiple priorities are applied correctly in bulk to worker threads.
+TEST_F(ClusterManagerImplTest, BatchClusterUpdatesMultiClusterMultiPriority) {
+  const std::string yaml = R"EOF(
+  static_resources:
+    clusters:
+    - name: cluster_0
+      connect_timeout: 0.250s
+      type: STATIC
+      lb_policy: ROUND_ROBIN
+      load_assignment:
+        cluster_name: cluster_0
+        endpoints:
+        - lb_endpoints:
+          - endpoint:
+              address:
+                socket_address:
+                  address: 127.0.0.1
+                  port_value: 11000
+  )EOF";
+  create(parseBootstrapFromV3Yaml(yaml));
+
+  const std::string init_remove_yaml = R"EOF(
+    name: cluster_to_remove
+    connect_timeout: 0.250s
+    type: STATIC
+    lb_policy: ROUND_ROBIN
+    load_assignment:
+      cluster_name: cluster_to_remove
+      endpoints:
+      - lb_endpoints:
+        - endpoint:
+            address:
+              socket_address:
+                address: 127.0.0.1
+                port_value: 11000
+  )EOF";
+  const std::string init_update_yaml = R"EOF(
+    name: cluster_to_update
+    connect_timeout: 0.250s
+    type: STATIC
+    lb_policy: ROUND_ROBIN
+    load_assignment:
+      cluster_name: cluster_to_update
+      endpoints:
+      - lb_endpoints:
+        - endpoint:
+            address:
+              socket_address:
+                address: 127.0.0.1
+                port_value: 11001
+  )EOF";
+  EXPECT_TRUE(*cluster_manager_->addOrUpdateCluster(parseClusterFromV3Yaml(init_remove_yaml), "v1", true));
+  EXPECT_TRUE(*cluster_manager_->addOrUpdateCluster(parseClusterFromV3Yaml(init_update_yaml), "v1", true));
+
+  const std::string new_cluster_yaml = R"EOF(
+    name: cluster_added
+    connect_timeout: 0.250s
+    type: STATIC
+    lb_policy: ROUND_ROBIN
+    load_assignment:
+      cluster_name: cluster_added
+      endpoints:
+      - priority: 0
+        lb_endpoints:
+        - endpoint:
+            address:
+              socket_address:
+                address: 127.0.0.1
+                port_value: 11005
+      - priority: 1
+        lb_endpoints:
+        - endpoint:
+            address:
+              socket_address:
+                address: 127.0.0.1
+                port_value: 11006
+  )EOF";
+
+  const std::string updated_cluster_yaml = R"EOF(
+    name: cluster_to_update
+    connect_timeout: 0.250s
+    type: STATIC
+    lb_policy: ROUND_ROBIN
+    load_assignment:
+      cluster_name: cluster_to_update
+      endpoints:
+      - priority: 0
+        lb_endpoints:
+        - endpoint:
+            address:
+              socket_address:
+                address: 127.0.0.1
+                port_value: 11007
+      - priority: 1
+        lb_endpoints:
+        - endpoint:
+            address:
+              socket_address:
+                address: 127.0.0.1
+                port_value: 11008
+  )EOF";
+
+  {
+    auto batch = cluster_manager_->createSourceBatch();
+    EXPECT_NE(nullptr, batch);
+
+    EXPECT_TRUE(cluster_manager_->removeCluster("cluster_to_remove", true));
+    EXPECT_TRUE(*cluster_manager_->addOrUpdateCluster(parseClusterFromV3Yaml(new_cluster_yaml), "v1", true));
+    EXPECT_TRUE(*cluster_manager_->addOrUpdateCluster(parseClusterFromV3Yaml(updated_cluster_yaml), "v2", true));
+  }
+
+  EXPECT_FALSE(cluster_manager_->hasCluster("cluster_to_remove"));
+  EXPECT_EQ(nullptr, cluster_manager_->getThreadLocalCluster("cluster_to_remove"));
+
+  EXPECT_TRUE(cluster_manager_->hasCluster("cluster_added"));
+  EXPECT_NE(nullptr, cluster_manager_->getThreadLocalCluster("cluster_added"));
+
+  EXPECT_TRUE(cluster_manager_->hasCluster("cluster_to_update"));
+  EXPECT_NE(nullptr, cluster_manager_->getThreadLocalCluster("cluster_to_update"));
+}
+
+// Verifies that cluster update callbacks are invoked in the exact order that actions were batched.
+TEST_F(ClusterManagerImplTest, BatchClusterUpdatesCallbackOrdering) {
+  const std::string yaml = R"EOF(
+  static_resources:
+    clusters:
+    - name: cluster_0
+      connect_timeout: 0.250s
+      type: STATIC
+      lb_policy: ROUND_ROBIN
+      load_assignment:
+        cluster_name: cluster_0
+        endpoints:
+        - lb_endpoints:
+          - endpoint:
+              address:
+                socket_address:
+                  address: 127.0.0.1
+                  port_value: 11000
+  )EOF";
+  create(parseBootstrapFromV3Yaml(yaml));
+
+  const std::string init_cluster_yaml = R"EOF(
+    name: initial_cluster
+    connect_timeout: 0.250s
+    type: STATIC
+    lb_policy: ROUND_ROBIN
+    load_assignment:
+      cluster_name: initial_cluster
+      endpoints:
+      - lb_endpoints:
+        - endpoint:
+            address:
+              socket_address:
+                address: 127.0.0.1
+                port_value: 11000
+  )EOF";
+  EXPECT_TRUE(*cluster_manager_->addOrUpdateCluster(parseClusterFromV3Yaml(init_cluster_yaml), "v1", true));
+
+  std::vector<std::string> callback_events;
+  MockClusterUpdateCallbacks callbacks;
+  EXPECT_CALL(callbacks, onClusterAddOrUpdate(_, _))
+      .WillRepeatedly(Invoke([&callback_events](absl::string_view cluster_name, ThreadLocalClusterCommand&) {
+        callback_events.push_back(fmt::format("add/update:{}", cluster_name));
+      }));
+  EXPECT_CALL(callbacks, onClusterRemoval(_))
+      .WillRepeatedly(Invoke([&callback_events](absl::string_view cluster_name) {
+        callback_events.push_back(fmt::format("remove:{}", cluster_name));
+      }));
+
+  auto handle = cluster_manager_->addThreadLocalClusterUpdateCallbacks(callbacks);
+
+  const std::string c1_yaml = R"EOF(
+    name: batch_c1
+    connect_timeout: 0.250s
+    type: STATIC
+    lb_policy: ROUND_ROBIN
+    load_assignment:
+      cluster_name: batch_c1
+      endpoints:
+      - lb_endpoints:
+        - endpoint:
+            address:
+              socket_address:
+                address: 127.0.0.1
+                port_value: 11009
+  )EOF";
+
+  const std::string c2_yaml = R"EOF(
+    name: batch_c2
+    connect_timeout: 0.250s
+    type: STATIC
+    lb_policy: ROUND_ROBIN
+    load_assignment:
+      cluster_name: batch_c2
+      endpoints:
+      - lb_endpoints:
+        - endpoint:
+            address:
+              socket_address:
+                address: 127.0.0.1
+                port_value: 11010
+  )EOF";
+
+  {
+    auto batch = cluster_manager_->createSourceBatch();
+    EXPECT_TRUE(*cluster_manager_->addOrUpdateCluster(parseClusterFromV3Yaml(c1_yaml), "v1", true));
+    EXPECT_TRUE(cluster_manager_->removeCluster("initial_cluster", true));
+    EXPECT_TRUE(*cluster_manager_->addOrUpdateCluster(parseClusterFromV3Yaml(c2_yaml), "v1", true));
+  }
+
+  const std::vector<std::string> expected = {
+      "add/update:batch_c1",
+      "remove:initial_cluster",
+      "add/update:batch_c2",
+  };
+  EXPECT_EQ(callback_events, expected);
+}
+
+// Verifies that a callback that removes itself during a batched callback loop does not invalidate
+// the callback list iterator.
+TEST_F(ClusterManagerImplTest, BatchClusterUpdatesSelfRemovingCallback) {
+  const std::string yaml = R"EOF(
+  static_resources:
+    clusters:
+    - name: initial_cluster
+      connect_timeout: 0.250s
+      type: STATIC
+      lb_policy: ROUND_ROBIN
+      load_assignment:
+        cluster_name: initial_cluster
+        endpoints:
+        - lb_endpoints:
+          - endpoint:
+              address:
+                socket_address:
+                  address: 127.0.0.1
+                  port_value: 11000
+  )EOF";
+  create(parseBootstrapFromV3Yaml(yaml));
+
+  ClusterUpdateCallbacksHandlePtr handle;
+  MockClusterUpdateCallbacks callbacks;
+  EXPECT_CALL(callbacks, onClusterAddOrUpdate(_, _))
+      .WillOnce(Invoke([&handle](absl::string_view, ThreadLocalClusterCommand&) {
+        // Reset the handle during the callback invocation to test self-removal safety.
+        handle.reset();
+      }));
+
+  handle = cluster_manager_->addThreadLocalClusterUpdateCallbacks(callbacks);
+
+  const std::string c1_yaml = R"EOF(
+    name: batch_c1
+    connect_timeout: 0.250s
+    type: STATIC
+    lb_policy: ROUND_ROBIN
+    load_assignment:
+      cluster_name: batch_c1
+      endpoints:
+      - lb_endpoints:
+        - endpoint:
+            address:
+              socket_address:
+                address: 127.0.0.1
+                port_value: 11011
+  )EOF";
+
+  const std::string c2_yaml = R"EOF(
+    name: batch_c2
+    connect_timeout: 0.250s
+    type: STATIC
+    lb_policy: ROUND_ROBIN
+    load_assignment:
+      cluster_name: batch_c2
+      endpoints:
+      - lb_endpoints:
+        - endpoint:
+            address:
+              socket_address:
+                address: 127.0.0.1
+                port_value: 11012
+  )EOF";
+
+  {
+    auto batch = cluster_manager_->createSourceBatch();
+    EXPECT_TRUE(*cluster_manager_->addOrUpdateCluster(parseClusterFromV3Yaml(c1_yaml), "v1", true));
+    EXPECT_TRUE(*cluster_manager_->addOrUpdateCluster(parseClusterFromV3Yaml(c2_yaml), "v1", true));
+  }
+
+  EXPECT_TRUE(cluster_manager_->hasCluster("batch_c1"));
+  EXPECT_TRUE(cluster_manager_->hasCluster("batch_c2"));
 }
 
 } // namespace
