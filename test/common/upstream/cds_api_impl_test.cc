@@ -528,8 +528,7 @@ resources:
   const auto status =
       cds_callbacks_->onConfigUpdate(decoded_resources.refvec_, response.version_info());
   EXPECT_THAT(status, StatusHelpers::StatusCodeIs(absl::StatusCode::kInvalidArgument));
-  EXPECT_THAT(status.message(),
-              testing::HasSubstr("duplicate cluster duplicate_cluster found"));
+  EXPECT_THAT(status.message(), testing::HasSubstr("duplicate cluster duplicate_cluster found"));
   EXPECT_THAT(status.message(), testing::HasSubstr("failing_cluster: invalid cluster config"));
 }
 

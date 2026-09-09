@@ -3257,7 +3257,8 @@ TEST_F(ClusterManagerImplTest, BatchClusterUpdatesRemoveAndReAddSameCluster) {
                 address: 127.0.0.1
                 port_value: 11000
   )EOF";
-  EXPECT_TRUE(*cluster_manager_->addOrUpdateCluster(parseClusterFromV3Yaml(init_cluster_yaml), "v1", true));
+  EXPECT_TRUE(
+      *cluster_manager_->addOrUpdateCluster(parseClusterFromV3Yaml(init_cluster_yaml), "v1", true));
   EXPECT_TRUE(cluster_manager_->hasCluster("readd_cluster"));
   EXPECT_NE(nullptr, cluster_manager_->getThreadLocalCluster("readd_cluster"));
 
@@ -3345,8 +3346,10 @@ TEST_F(ClusterManagerImplTest, BatchClusterUpdatesMultiClusterMultiPriority) {
                 address: 127.0.0.1
                 port_value: 11001
   )EOF";
-  EXPECT_TRUE(*cluster_manager_->addOrUpdateCluster(parseClusterFromV3Yaml(init_remove_yaml), "v1", true));
-  EXPECT_TRUE(*cluster_manager_->addOrUpdateCluster(parseClusterFromV3Yaml(init_update_yaml), "v1", true));
+  EXPECT_TRUE(
+      *cluster_manager_->addOrUpdateCluster(parseClusterFromV3Yaml(init_remove_yaml), "v1", true));
+  EXPECT_TRUE(
+      *cluster_manager_->addOrUpdateCluster(parseClusterFromV3Yaml(init_update_yaml), "v1", true));
 
   const std::string new_cluster_yaml = R"EOF(
     name: cluster_added
@@ -3401,8 +3404,10 @@ TEST_F(ClusterManagerImplTest, BatchClusterUpdatesMultiClusterMultiPriority) {
     EXPECT_NE(nullptr, batch);
 
     EXPECT_TRUE(cluster_manager_->removeCluster("cluster_to_remove", true));
-    EXPECT_TRUE(*cluster_manager_->addOrUpdateCluster(parseClusterFromV3Yaml(new_cluster_yaml), "v1", true));
-    EXPECT_TRUE(*cluster_manager_->addOrUpdateCluster(parseClusterFromV3Yaml(updated_cluster_yaml), "v2", true));
+    EXPECT_TRUE(*cluster_manager_->addOrUpdateCluster(parseClusterFromV3Yaml(new_cluster_yaml),
+                                                      "v1", true));
+    EXPECT_TRUE(*cluster_manager_->addOrUpdateCluster(parseClusterFromV3Yaml(updated_cluster_yaml),
+                                                      "v2", true));
   }
 
   EXPECT_FALSE(cluster_manager_->hasCluster("cluster_to_remove"));
@@ -3451,14 +3456,16 @@ TEST_F(ClusterManagerImplTest, BatchClusterUpdatesCallbackOrdering) {
                 address: 127.0.0.1
                 port_value: 11000
   )EOF";
-  EXPECT_TRUE(*cluster_manager_->addOrUpdateCluster(parseClusterFromV3Yaml(init_cluster_yaml), "v1", true));
+  EXPECT_TRUE(
+      *cluster_manager_->addOrUpdateCluster(parseClusterFromV3Yaml(init_cluster_yaml), "v1", true));
 
   std::vector<std::string> callback_events;
   MockClusterUpdateCallbacks callbacks;
   EXPECT_CALL(callbacks, onClusterAddOrUpdate(_, _))
-      .WillRepeatedly(Invoke([&callback_events](absl::string_view cluster_name, ThreadLocalClusterCommand&) {
-        callback_events.push_back(fmt::format("add/update:{}", cluster_name));
-      }));
+      .WillRepeatedly(
+          Invoke([&callback_events](absl::string_view cluster_name, ThreadLocalClusterCommand&) {
+            callback_events.push_back(fmt::format("add/update:{}", cluster_name));
+          }));
   EXPECT_CALL(callbacks, onClusterRemoval(_))
       .WillRepeatedly(Invoke([&callback_events](absl::string_view cluster_name) {
         callback_events.push_back(fmt::format("remove:{}", cluster_name));
