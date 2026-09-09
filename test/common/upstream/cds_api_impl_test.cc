@@ -577,6 +577,55 @@ resources:
   EXPECT_EQ("2", cds_->versionInfo());
 }
 
+// Verifies that CdsApiHelper catches EnvoyException when adding/updating clusters in CDS responses,
+// records the rejection reason, and returns an InvalidArgument error while maintaining the batch
+// scope.
+TEST_F(CdsApiImplTest, CdsApiHelperExceptionHandling) {
+  setup();
+
+  const std::string response_yaml = R"EOF(
+version_info: '1'
+resources:
+- "@type": type.googleapis.com/envoy.config.cluster.v3.Cluster
+  name: exception_cluster
+)EOF";
+  auto response =
+      TestUtility::parseYaml<envoy::service::discovery::v3::DiscoveryResponse>(response_yaml);
+  const auto decoded_resources =
+      TestUtility::decodeResources<envoy::config::cluster::v3::Cluster>(response);
+
+  EXPECT_CALL(cm_, createSourceBatch()).WillOnce(Return(nullptr));
+  expectAddToThrow("exception_cluster", "syntax error in cluster configuration");
+  EXPECT_CALL(initialized_, ready());
+
+  const auto status =
+      cds_callbacks_->onConfigUpdate(decoded_resources.refvec_, response.version_info());
+  EXPECT_THAT(status, StatusHelpers::StatusCodeIs(absl::StatusCode::kInvalidArgument));
+  EXPECT_THAT(status.message(),
+              testing::HasSubstr("exception_cluster: syntax error in cluster configuration"));
+}
+
+// Verifies that an empty CDS response under an active batch executes cleanly without errors.
+TEST_F(CdsApiImplTest, BatchEmptyCdsResponse) {
+  setup();
+
+  const std::string response_yaml = R"EOF(
+version_info: '1'
+)EOF";
+  auto response =
+      TestUtility::parseYaml<envoy::service::discovery::v3::DiscoveryResponse>(response_yaml);
+  const auto decoded_resources =
+      TestUtility::decodeResources<envoy::config::cluster::v3::Cluster>(response);
+
+  EXPECT_CALL(cm_, clusters()).WillOnce(Return(makeClusterInfoMaps({})));
+  EXPECT_CALL(cm_, createSourceBatch()).WillOnce(Return(nullptr));
+  EXPECT_CALL(initialized_, ready());
+
+  EXPECT_OK(cds_callbacks_->onConfigUpdate(decoded_resources.refvec_, response.version_info()));
+  EXPECT_EQ("", cds_->versionInfo());
+  EXPECT_EQ(0UL, scope_.counter("cluster_manager.cds.config_reload").value());
+}
+
 } // namespace
 } // namespace Upstream
 } // namespace Envoy

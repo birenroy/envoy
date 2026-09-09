@@ -980,6 +980,65 @@ TEST_P(EdsTest, BatchMultipleDeferredUpdatesAndInlineInflation) {
       hostsInHostsVector(cluster.prioritySet().hostSetsPerPriority()[0]->hosts(), {8000, 9000}));
 }
 
+// Verifies that removing a deferred cluster before it has ever been inflated removes it from
+// both active and deferred cluster maps without leaving orphaned state.
+TEST_P(StaticClusterTest, BatchDeferredClusterRemovalBeforeInflation) {
+  const std::string bootstrap_yaml = R"EOF(
+    static_resources:
+      clusters:
+      - name: bootstrap_cluster
+        connect_timeout: 0.250s
+        lb_policy: ROUND_ROBIN
+        load_assignment:
+          cluster_name: bootstrap_cluster
+          endpoints:
+          - lb_endpoints:
+            - endpoint:
+                address:
+                  socket_address:
+                    address: 127.0.0.1
+                    port_value: 60000
+    )EOF";
+
+  auto bootstrap = parseBootstrapFromV3YamlEnableDeferredCluster(bootstrap_yaml);
+  create(bootstrap);
+
+  const std::string cluster_to_remove_yaml = R"EOF(
+    name: deferred_to_remove
+    connect_timeout: 0.250s
+    lb_policy: ROUND_ROBIN
+    load_assignment:
+      cluster_name: deferred_to_remove
+      endpoints:
+      - lb_endpoints:
+        - endpoint:
+            address:
+              socket_address:
+                address: 127.0.0.1
+                port_value: 11020
+  )EOF";
+
+  // Add deferred cluster in a batch
+  {
+    auto batch = cluster_manager_->createSourceBatch();
+    EXPECT_TRUE(*cluster_manager_->addOrUpdateCluster(
+        parseClusterFromV3Yaml(cluster_to_remove_yaml, getStaticClusterType()), "v1"));
+  }
+
+  EXPECT_TRUE(cluster_manager_->hasCluster("deferred_to_remove"));
+  EXPECT_EQ(readGauge("thread_local_cluster_manager.test_thread.clusters_inflated"), 0);
+
+  // Remove deferred cluster in a batch before inflation
+  {
+    auto batch = cluster_manager_->createSourceBatch();
+    EXPECT_TRUE(cluster_manager_->removeCluster("deferred_to_remove"));
+  }
+
+  EXPECT_FALSE(cluster_manager_->hasCluster("deferred_to_remove"));
+  EXPECT_EQ(cluster_manager_->getThreadLocalCluster("deferred_to_remove"), nullptr);
+  EXPECT_EQ(readGauge("thread_local_cluster_manager.test_thread.clusters_inflated"), 0);
+}
+
 } // namespace
 } // namespace Upstream
 } // namespace Envoy

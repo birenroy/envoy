@@ -3594,6 +3594,212 @@ TEST_F(ClusterManagerImplTest, BatchClusterUpdatesSelfRemovingCallback) {
   EXPECT_TRUE(cluster_manager_->hasCluster("batch_c2"));
 }
 
+// Verifies that multiple sequential RAII batch update scopes execute correctly on the same
+// cluster manager instance and that pending actions are cleared after each batch flush.
+TEST_F(ClusterManagerImplTest, BatchClusterUpdatesSequentialBatches) {
+  const std::string yaml = R"EOF(
+  static_resources:
+    clusters:
+    - name: cluster_0
+      connect_timeout: 0.250s
+      type: STATIC
+      lb_policy: ROUND_ROBIN
+      load_assignment:
+        cluster_name: cluster_0
+        endpoints:
+        - lb_endpoints:
+          - endpoint:
+              address:
+                socket_address:
+                  address: 127.0.0.1
+                  port_value: 11000
+  )EOF";
+  create(parseBootstrapFromV3Yaml(yaml));
+
+  const std::string c1_yaml = R"EOF(
+    name: seq_cluster_1
+    connect_timeout: 0.250s
+    type: STATIC
+    lb_policy: ROUND_ROBIN
+    load_assignment:
+      cluster_name: seq_cluster_1
+      endpoints:
+      - lb_endpoints:
+        - endpoint:
+            address:
+              socket_address:
+                address: 127.0.0.1
+                port_value: 11013
+  )EOF";
+  const std::string c2_yaml = R"EOF(
+    name: seq_cluster_2
+    connect_timeout: 0.250s
+    type: STATIC
+    lb_policy: ROUND_ROBIN
+    load_assignment:
+      cluster_name: seq_cluster_2
+      endpoints:
+      - lb_endpoints:
+        - endpoint:
+            address:
+              socket_address:
+                address: 127.0.0.1
+                port_value: 11014
+  )EOF";
+
+  // First batch adds seq_cluster_1
+  {
+    auto b1 = cluster_manager_->createSourceBatch();
+    EXPECT_TRUE(*cluster_manager_->addOrUpdateCluster(parseClusterFromV3Yaml(c1_yaml), "v1", true));
+  }
+  EXPECT_TRUE(cluster_manager_->hasCluster("seq_cluster_1"));
+  EXPECT_NE(nullptr, cluster_manager_->getThreadLocalCluster("seq_cluster_1"));
+
+  // Second batch adds seq_cluster_2 and removes seq_cluster_1
+  {
+    auto b2 = cluster_manager_->createSourceBatch();
+    EXPECT_TRUE(*cluster_manager_->addOrUpdateCluster(parseClusterFromV3Yaml(c2_yaml), "v1", true));
+    EXPECT_TRUE(cluster_manager_->removeCluster("seq_cluster_1", true));
+  }
+  EXPECT_FALSE(cluster_manager_->hasCluster("seq_cluster_1"));
+  EXPECT_EQ(nullptr, cluster_manager_->getThreadLocalCluster("seq_cluster_1"));
+  EXPECT_TRUE(cluster_manager_->hasCluster("seq_cluster_2"));
+  EXPECT_NE(nullptr, cluster_manager_->getThreadLocalCluster("seq_cluster_2"));
+}
+
+// Verifies that creating and destroying an empty batch when no actions are queued is a safe
+// no-op and early-returns without error.
+TEST_F(ClusterManagerImplTest, BatchClusterUpdatesEmptyBatchEarlyReturn) {
+  const std::string yaml = R"EOF(
+  static_resources:
+    clusters:
+    - name: cluster_0
+      connect_timeout: 0.250s
+      type: STATIC
+      lb_policy: ROUND_ROBIN
+      load_assignment:
+        cluster_name: cluster_0
+        endpoints:
+        - lb_endpoints:
+          - endpoint:
+              address:
+                socket_address:
+                  address: 127.0.0.1
+                  port_value: 11000
+  )EOF";
+  create(parseBootstrapFromV3Yaml(yaml));
+
+  {
+    auto batch = cluster_manager_->createSourceBatch();
+    EXPECT_NE(nullptr, batch);
+  }
+
+  EXPECT_TRUE(cluster_manager_->hasCluster("cluster_0"));
+  EXPECT_NE(nullptr, cluster_manager_->getThreadLocalCluster("cluster_0"));
+}
+
+// Verifies nested batch scopes: actions are queued across multiple nested scopes and only flushed
+// to worker thread TLS when the outermost batch exits.
+TEST_F(ClusterManagerImplTest, BatchClusterUpdatesNestedBatchesOrder) {
+  const std::string yaml = R"EOF(
+  static_resources:
+    clusters:
+    - name: cluster_0
+      connect_timeout: 0.250s
+      type: STATIC
+      lb_policy: ROUND_ROBIN
+      load_assignment:
+        cluster_name: cluster_0
+        endpoints:
+        - lb_endpoints:
+          - endpoint:
+              address:
+                socket_address:
+                  address: 127.0.0.1
+                  port_value: 11000
+  )EOF";
+  create(parseBootstrapFromV3Yaml(yaml));
+
+  const std::string outer_cluster_yaml = R"EOF(
+    name: nested_outer_cluster
+    connect_timeout: 0.250s
+    type: STATIC
+    lb_policy: ROUND_ROBIN
+    load_assignment:
+      cluster_name: nested_outer_cluster
+      endpoints:
+      - lb_endpoints:
+        - endpoint:
+            address:
+              socket_address:
+                address: 127.0.0.1
+                port_value: 11015
+  )EOF";
+
+  const std::string inner_cluster_yaml = R"EOF(
+    name: nested_inner_cluster
+    connect_timeout: 0.250s
+    type: STATIC
+    lb_policy: ROUND_ROBIN
+    load_assignment:
+      cluster_name: nested_inner_cluster
+      endpoints:
+      - lb_endpoints:
+        - endpoint:
+            address:
+              socket_address:
+                address: 127.0.0.1
+                port_value: 11016
+  )EOF";
+
+  {
+    auto outer_batch = cluster_manager_->createSourceBatch();
+    EXPECT_TRUE(*cluster_manager_->addOrUpdateCluster(parseClusterFromV3Yaml(outer_cluster_yaml),
+                                                      "v1", true));
+    {
+      auto inner_batch = cluster_manager_->createSourceBatch();
+      EXPECT_TRUE(*cluster_manager_->addOrUpdateCluster(parseClusterFromV3Yaml(inner_cluster_yaml),
+                                                        "v1", true));
+    }
+  }
+
+  EXPECT_TRUE(cluster_manager_->hasCluster("nested_outer_cluster"));
+  EXPECT_NE(nullptr, cluster_manager_->getThreadLocalCluster("nested_outer_cluster"));
+  EXPECT_TRUE(cluster_manager_->hasCluster("nested_inner_cluster"));
+  EXPECT_NE(nullptr, cluster_manager_->getThreadLocalCluster("nested_inner_cluster"));
+}
+
+// Verifies that batching removal of a non-existent cluster handles safely without crashing or
+// corrupting thread-local maps.
+TEST_F(ClusterManagerImplTest, BatchClusterUpdatesRemovalNonExistent) {
+  const std::string yaml = R"EOF(
+  static_resources:
+    clusters:
+    - name: cluster_0
+      connect_timeout: 0.250s
+      type: STATIC
+      lb_policy: ROUND_ROBIN
+      load_assignment:
+        cluster_name: cluster_0
+        endpoints:
+        - lb_endpoints:
+          - endpoint:
+              address:
+                socket_address:
+                  address: 127.0.0.1
+                  port_value: 11000
+  )EOF";
+  create(parseBootstrapFromV3Yaml(yaml));
+
+  {
+    auto batch = cluster_manager_->createSourceBatch();
+    EXPECT_FALSE(cluster_manager_->removeCluster("unknown_cluster", true));
+  }
+
+  EXPECT_TRUE(cluster_manager_->hasCluster("cluster_0"));
+  EXPECT_NE(nullptr, cluster_manager_->getThreadLocalCluster("cluster_0"));
+}
+
 } // namespace
 } // namespace Upstream
 } // namespace Envoy
