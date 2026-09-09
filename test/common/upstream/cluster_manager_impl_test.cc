@@ -3800,6 +3800,216 @@ TEST_F(ClusterManagerImplTest, BatchClusterUpdatesRemovalNonExistent) {
   EXPECT_NE(nullptr, cluster_manager_->getThreadLocalCluster("cluster_0"));
 }
 
+// Verifies that when enable_batch_aware_update is disabled, batch cluster updates
+// fall back cleanly to sequential per-priority updateClusterMembership calls.
+TEST_F(ClusterManagerImplTest, BatchClusterUpdatesSequentialFallbackWhenBatchAwareUpdateDisabled) {
+  TestScopedRuntime scoped_runtime;
+  scoped_runtime.mergeValues({{"envoy.reloadable_features.enable_batch_aware_update", "false"}});
+
+  const std::string yaml = R"EOF(
+  static_resources:
+    clusters:
+    - name: cluster_0
+      connect_timeout: 0.250s
+      type: STATIC
+      lb_policy: ROUND_ROBIN
+      load_assignment:
+        cluster_name: cluster_0
+        endpoints:
+        - lb_endpoints:
+          - endpoint:
+              address:
+                socket_address:
+                  address: 127.0.0.1
+                  port_value: 11000
+  )EOF";
+  create(parseBootstrapFromV3Yaml(yaml));
+
+  const std::string fallback_cluster_yaml = R"EOF(
+    name: fallback_cluster
+    connect_timeout: 0.250s
+    type: STATIC
+    lb_policy: ROUND_ROBIN
+    load_assignment:
+      cluster_name: fallback_cluster
+      endpoints:
+      - priority: 0
+        lb_endpoints:
+        - endpoint:
+            address:
+              socket_address:
+                address: 127.0.0.1
+                port_value: 11017
+      - priority: 1
+        lb_endpoints:
+        - endpoint:
+            address:
+              socket_address:
+                address: 127.0.0.1
+                port_value: 11018
+  )EOF";
+
+  {
+    auto batch = cluster_manager_->createSourceBatch();
+    EXPECT_TRUE(*cluster_manager_->addOrUpdateCluster(parseClusterFromV3Yaml(fallback_cluster_yaml),
+                                                      "v1", true));
+  }
+
+  EXPECT_TRUE(cluster_manager_->hasCluster("fallback_cluster"));
+  auto* thread_local_cluster = cluster_manager_->getThreadLocalCluster("fallback_cluster");
+  ASSERT_NE(nullptr, thread_local_cluster);
+  EXPECT_EQ(2, thread_local_cluster->prioritySet().hostSetsPerPriority().size());
+}
+
+// Verifies drop overload and drop category parameter updates on existing TLS clusters during batch
+// updates.
+TEST_F(ClusterManagerImplTest, BatchClusterUpdatesDropOverloadAndCategoryExistingCluster) {
+  const std::string yaml = R"EOF(
+  static_resources:
+    clusters:
+    - name: cluster_0
+      connect_timeout: 0.250s
+      type: STATIC
+      lb_policy: ROUND_ROBIN
+      load_assignment:
+        cluster_name: cluster_0
+        endpoints:
+        - lb_endpoints:
+          - endpoint:
+              address:
+                socket_address:
+                  address: 127.0.0.1
+                  port_value: 11000
+  )EOF";
+  create(parseBootstrapFromV3Yaml(yaml));
+
+  const std::string drop_cluster_yaml = R"EOF(
+    name: drop_cluster
+    connect_timeout: 0.250s
+    type: STATIC
+    lb_policy: ROUND_ROBIN
+    load_assignment:
+      cluster_name: drop_cluster
+      endpoints:
+      - lb_endpoints:
+        - endpoint:
+            address:
+              socket_address:
+                address: 127.0.0.1
+                port_value: 11019
+  )EOF";
+
+  // Initial add in batch
+  {
+    auto batch = cluster_manager_->createSourceBatch();
+    EXPECT_TRUE(*cluster_manager_->addOrUpdateCluster(parseClusterFromV3Yaml(drop_cluster_yaml),
+                                                      "v1", true));
+  }
+
+  EXPECT_TRUE(cluster_manager_->hasCluster("drop_cluster"));
+
+  const std::string drop_cluster_yaml_v2 = R"EOF(
+    name: drop_cluster
+    connect_timeout: 0.500s
+    type: STATIC
+    lb_policy: ROUND_ROBIN
+    load_assignment:
+      cluster_name: drop_cluster
+      endpoints:
+      - lb_endpoints:
+        - endpoint:
+            address:
+              socket_address:
+                address: 127.0.0.1
+                port_value: 11019
+  )EOF";
+
+  // Subsequent update in batch modifying cluster parameters
+  {
+    auto batch = cluster_manager_->createSourceBatch();
+    EXPECT_TRUE(*cluster_manager_->addOrUpdateCluster(parseClusterFromV3Yaml(drop_cluster_yaml_v2),
+                                                      "v2", true));
+  }
+
+  EXPECT_TRUE(cluster_manager_->hasCluster("drop_cluster"));
+  EXPECT_NE(nullptr, cluster_manager_->getThreadLocalCluster("drop_cluster"));
+}
+
+// Verifies multiple update callbacks on a deferred cluster where the first callback inflates the
+// cluster inline and subsequent callbacks observe and reuse the already inflated instance.
+TEST_F(ClusterManagerImplTest, BatchClusterUpdatesDeferredMultipleCallbacksInlineInflation) {
+  const std::string bootstrap_yaml = R"EOF(
+  cluster_manager:
+    enable_deferred_cluster_creation: true
+  static_resources:
+    clusters:
+    - name: bootstrap_cluster
+      connect_timeout: 0.250s
+      type: STATIC
+      lb_policy: ROUND_ROBIN
+      load_assignment:
+        cluster_name: bootstrap_cluster
+        endpoints:
+        - lb_endpoints:
+          - endpoint:
+              address:
+                socket_address:
+                  address: 127.0.0.1
+                  port_value: 11000
+  )EOF";
+  create(parseBootstrapFromV3Yaml(bootstrap_yaml));
+
+  std::vector<std::string> callback_order;
+  MockClusterUpdateCallbacks cb1;
+  EXPECT_CALL(cb1, onClusterAddOrUpdate(_, _))
+      .WillRepeatedly(
+          Invoke([&callback_order](absl::string_view name, ThreadLocalClusterCommand& cmd) {
+            callback_order.push_back(fmt::format("cb1:{}", name));
+            // First callback forces inline inflation by invoking the command
+            auto& cluster = cmd();
+            EXPECT_EQ(name, cluster.info()->name());
+          }));
+
+  MockClusterUpdateCallbacks cb2;
+  EXPECT_CALL(cb2, onClusterAddOrUpdate(_, _))
+      .WillRepeatedly(
+          Invoke([&callback_order](absl::string_view name, ThreadLocalClusterCommand& cmd) {
+            callback_order.push_back(fmt::format("cb2:{}", name));
+            // Second callback accesses the command and reuses the existing inflated cluster
+            auto& cluster = cmd();
+            EXPECT_EQ(name, cluster.info()->name());
+          }));
+
+  auto handle1 = cluster_manager_->addThreadLocalClusterUpdateCallbacks(cb1);
+  auto handle2 = cluster_manager_->addThreadLocalClusterUpdateCallbacks(cb2);
+
+  const std::string deferred_cluster_yaml = R"EOF(
+    name: deferred_cluster
+    connect_timeout: 0.250s
+    type: STATIC
+    lb_policy: ROUND_ROBIN
+    load_assignment:
+      cluster_name: deferred_cluster
+      endpoints:
+      - lb_endpoints:
+        - endpoint:
+            address:
+              socket_address:
+                address: 127.0.0.1
+                port_value: 11020
+  )EOF";
+
+  {
+    auto batch = cluster_manager_->createSourceBatch();
+    EXPECT_TRUE(*cluster_manager_->addOrUpdateCluster(parseClusterFromV3Yaml(deferred_cluster_yaml),
+                                                      "v1", true));
+  }
+
+  EXPECT_TRUE(cluster_manager_->hasCluster("deferred_cluster"));
+  const std::vector<std::string> expected_order = {"cb2:deferred_cluster", "cb1:deferred_cluster"};
+  EXPECT_EQ(callback_order, expected_order);
+}
+
 } // namespace
 } // namespace Upstream
 } // namespace Envoy
