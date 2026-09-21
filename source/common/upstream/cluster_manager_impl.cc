@@ -312,7 +312,9 @@ ClusterManagerImpl::ClusterManagerImpl(const envoy::config::bootstrap::v3::Boots
       stats_(context.serverScope().store()), tls_(context.threadLocal()),
       xds_manager_(context.xdsManager()), random_(context.api().randomGenerator()),
       deferred_cluster_creation_(bootstrap.cluster_manager().enable_deferred_cluster_creation()),
-      max_cluster_update_batch_size_(DefaultMaxClusterUpdateBatchSize),
+      max_cluster_update_batch_size_(PROTOBUF_GET_WRAPPED_OR_DEFAULT(
+          bootstrap.cluster_manager(), max_cluster_update_batch_size,
+          DefaultMaxClusterUpdateBatchSize)),
       bind_config_(bootstrap.cluster_manager().has_upstream_bind_config()
                        ? std::make_optional(bootstrap.cluster_manager().upstream_bind_config())
                        : std::nullopt),
@@ -543,6 +545,7 @@ absl::Status
 ClusterManagerImpl::initialize(const envoy::config::bootstrap::v3::Bootstrap& bootstrap) {
   ASSERT(!initialized_);
   initialized_ = true;
+
   auto batch = createSourceBatch();
 
   // Cluster loading happens in two phases: first all the primary clusters are loaded, and then all
@@ -658,13 +661,13 @@ ClusterManagerImpl::initialize(const envoy::config::bootstrap::v3::Bootstrap& bo
     init_helper_.addCluster(*cluster.second);
   }
 
-  // Potentially move to secondary initialization on the static bootstrap clusters if all primary
-  // clusters have already initialized. (E.g., if all static).
   // End the bootstrap batch scope before secondary cluster and static load completion,
   // ensuring all primary static clusters are flushed to thread-local storage before secondary
   // initialization (e.g., LRS async client setup) and ADS stream connections begin.
   batch.reset();
 
+  // Potentially move to secondary initialization on the static bootstrap clusters if all primary
+  // clusters have already initialized. (E.g., if all static).
   init_helper_.onStaticLoadComplete();
 
   // Initialize the ADS and xDS-TP config based connections.
