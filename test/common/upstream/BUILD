@@ -97,6 +97,7 @@ envoy_cc_test(
         "//source/extensions/load_balancing_policies/ring_hash:config",
         "//source/extensions/load_balancing_policies/round_robin:config",
         "//test/mocks/config:config_mocks",
+        "//test/mocks/upstream:cluster_update_callbacks_mocks",
         "//test/test_common:logging_lib",
         "//test/test_common:status_utility_lib",
         "//test/test_common:utility_lib",

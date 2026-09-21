@@ -543,6 +543,7 @@ absl::Status
 ClusterManagerImpl::initialize(const envoy::config::bootstrap::v3::Bootstrap& bootstrap) {
   ASSERT(!initialized_);
   initialized_ = true;
+  auto batch = createSourceBatch();
 
   // Cluster loading happens in two phases: first all the primary clusters are loaded, and then all
   // the secondary clusters are loaded. As it currently stands all non-EDS clusters and EDS which
@@ -659,6 +660,11 @@ ClusterManagerImpl::initialize(const envoy::config::bootstrap::v3::Bootstrap& bo
 
   // Potentially move to secondary initialization on the static bootstrap clusters if all primary
   // clusters have already initialized. (E.g., if all static).
+  // End the bootstrap batch scope before secondary cluster and static load completion,
+  // ensuring all primary static clusters are flushed to thread-local storage before secondary
+  // initialization (e.g., LRS async client setup) and ADS stream connections begin.
+  batch.reset();
+
   init_helper_.onStaticLoadComplete();
 
   // Initialize the ADS and xDS-TP config based connections.
